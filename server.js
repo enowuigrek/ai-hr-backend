@@ -25,7 +25,7 @@ async function initializeDatabase() {
     await pool.query('SELECT NOW()');
     console.log('Database connected successfully');
     
-    // Create tables if they don't exist
+    // Create enhanced tables
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversations (
         id SERIAL PRIMARY KEY,
@@ -33,7 +33,9 @@ async function initializeDatabase() {
         user_message TEXT NOT NULL,
         ai_response TEXT NOT NULL,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        message_length INTEGER DEFAULT 0,
+        response_time_ms INTEGER DEFAULT 0
       )
     `);
     
@@ -42,11 +44,24 @@ async function initializeDatabase() {
         id SERIAL PRIMARY KEY,
         session_id VARCHAR(255) UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        message_count INTEGER DEFAULT 0,
+        total_tokens INTEGER DEFAULT 0,
+        session_name VARCHAR(255) DEFAULT 'Nowa konwersacja',
+        is_active BOOLEAN DEFAULT TRUE
       )
     `);
     
-    console.log('Database tables created/verified');
+    // Add indexes for better performance
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id);
+    `);
+    
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity DESC);
+    `);
+    
+    console.log('Database tables created/verified with indexes');
   } catch (error) {
     console.error('Database initialization error:', error);
   }
@@ -93,13 +108,27 @@ const rateLimitMiddleware = (req, res, next) => {
   next();
 };
 
-// Database helper functions
-async function saveConversation(sessionId, userMessage, aiResponse) {
+// Enhanced database helper functions
+async function saveConversation(sessionId, userMessage, aiResponse, responseTimeMs = 0) {
   try {
+    const messageLength = userMessage.length + aiResponse.length;
+    
     const result = await pool.query(
-      'INSERT INTO conversations (session_id, user_message, ai_response) VALUES ($1, $2, $3) RETURNING id',
-      [sessionId, userMessage, aiResponse]
+      `INSERT INTO conversations (session_id, user_message, ai_response, message_length, response_time_ms) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [sessionId, userMessage, aiResponse, messageLength, responseTimeMs]
     );
+    
+    // Update session statistics
+    await pool.query(
+      `UPDATE sessions 
+       SET last_activity = CURRENT_TIMESTAMP, 
+           message_count = message_count + 1,
+           total_tokens = total_tokens + $2
+       WHERE session_id = $1`,
+      [sessionId, Math.ceil(messageLength / 4)] // Approximate token count
+    );
+    
     return result.rows[0].id;
   } catch (error) {
     console.error('Error saving conversation:', error);
@@ -107,25 +136,45 @@ async function saveConversation(sessionId, userMessage, aiResponse) {
   }
 }
 
-async function getConversationHistory(sessionId, limit = 10) {
+async function getConversationHistory(sessionId, limit = 20, offset = 0) {
   try {
     const result = await pool.query(
-      'SELECT user_message, ai_response, timestamp FROM conversations WHERE session_id = $1 ORDER BY timestamp DESC LIMIT $2',
-      [sessionId, limit]
+      `SELECT user_message, ai_response, timestamp, message_length, response_time_ms 
+       FROM conversations 
+       WHERE session_id = $1 
+       ORDER BY timestamp ASC 
+       LIMIT $2 OFFSET $3`,
+      [sessionId, limit, offset]
     );
-    return result.rows.reverse(); // Return in chronological order
+    
+    const countResult = await pool.query(
+      'SELECT COUNT(*) as total FROM conversations WHERE session_id = $1',
+      [sessionId]
+    );
+    
+    return {
+      messages: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      hasMore: offset + result.rows.length < parseInt(countResult.rows[0].total)
+    };
   } catch (error) {
     console.error('Error getting conversation history:', error);
-    return [];
+    return { messages: [], total: 0, hasMore: false };
   }
 }
 
-async function createSession(sessionId) {
+async function createSession(sessionId, sessionName = null) {
   try {
+    const name = sessionName || `Sesja ${new Date().toLocaleDateString('pl-PL')}`;
+    
     await pool.query(
-      'INSERT INTO sessions (session_id) VALUES ($1) ON CONFLICT (session_id) DO UPDATE SET last_activity = CURRENT_TIMESTAMP',
-      [sessionId]
+      `INSERT INTO sessions (session_id, session_name) 
+       VALUES ($1, $2) 
+       ON CONFLICT (session_id) DO UPDATE SET 
+       last_activity = CURRENT_TIMESTAMP`,
+      [sessionId, name]
     );
+    
     return true;
   } catch (error) {
     console.error('Error creating session:', error);
@@ -133,11 +182,59 @@ async function createSession(sessionId) {
   }
 }
 
+async function getAllSessions(limit = 50, offset = 0) {
+  try {
+    const result = await pool.query(
+      `SELECT session_id, session_name, created_at, last_activity, 
+              message_count, total_tokens, is_active
+       FROM sessions 
+       WHERE is_active = TRUE
+       ORDER BY last_activity DESC 
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    
+    const countResult = await pool.query(
+      'SELECT COUNT(*) as total FROM sessions WHERE is_active = TRUE'
+    );
+    
+    return {
+      sessions: result.rows,
+      total: parseInt(countResult.rows[0].total),
+      hasMore: offset + result.rows.length < parseInt(countResult.rows[0].total)
+    };
+  } catch (error) {
+    console.error('Error getting sessions:', error);
+    return { sessions: [], total: 0, hasMore: false };
+  }
+}
+
+async function getSessionInfo(sessionId) {
+  try {
+    const result = await pool.query(
+      `SELECT s.*, 
+              (SELECT COUNT(*) FROM conversations WHERE session_id = s.session_id) as actual_message_count,
+              (SELECT MAX(timestamp) FROM conversations WHERE session_id = s.session_id) as last_message_time
+       FROM sessions s 
+       WHERE s.session_id = $1`,
+      [sessionId]
+    );
+    
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error getting session info:', error);
+    return null;
+  }
+}
+
 // OpenAI Integration - Main AI Function
 async function getAIResponse(message, sessionId) {
+  const startTime = Date.now();
+  
   try {
     // Get conversation history for context
-    const history = await getConversationHistory(sessionId, 5);
+    const historyResult = await getConversationHistory(sessionId, 5);
+    const history = historyResult.messages;
     
     // Build messages array for OpenAI
     const messages = [
@@ -192,13 +289,15 @@ STYL: przyjazny ekspert, konkretne odpowiedzi, polskie przykłady.`
       throw new Error('No response from OpenAI');
     }
 
-    return response.trim();
+    const responseTime = Date.now() - startTime;
+    return { response: response.trim(), responseTime };
 
   } catch (error) {
     console.error('OpenAI API Error:', error);
     
     // Fallback to local knowledge
-    return getFallbackResponse(message);
+    const responseTime = Date.now() - startTime;
+    return { response: getFallbackResponse(message), responseTime };
   }
 }
 
@@ -231,8 +330,14 @@ app.get('/', (req, res) => {
     message: 'AI HR Backend is running!', 
     status: 'OK',
     timestamp: new Date().toISOString(),
-    version: '2.0.0',
-    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Session Management'],
+    version: '2.1.0',
+    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Advanced Session Management'],
+    endpoints: [
+      'POST /api/chat',
+      'GET /api/sessions',
+      'GET /api/chat/history/:sessionId',
+      'DELETE /api/chat/session/:sessionId'
+    ],
     database: 'connected'
   });
 });
@@ -243,11 +348,12 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     database: 'postgresql',
-    ai: 'openai-gpt-4o-mini'
+    ai: 'openai-gpt-4o-mini',
+    features: 'advanced-session-management'
   });
 });
 
-// Main Chat endpoint with OpenAI integration
+// Main Chat endpoint with enhanced tracking
 app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
   try {
     const { message, sessionId } = req.body;
@@ -276,14 +382,14 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
     // Sanitize input
     const cleanMessage = message.trim();
 
-    // Get AI response from OpenAI
+    // Get AI response from OpenAI with timing
     console.log(`Processing message: ${cleanMessage.substring(0, 50)}...`);
-    const aiResponse = await getAIResponse(cleanMessage, currentSessionId);
+    const { response: aiResponse, responseTime } = await getAIResponse(cleanMessage, currentSessionId);
 
-    // Save conversation to database
-    const conversationId = await saveConversation(currentSessionId, cleanMessage, aiResponse);
+    // Save conversation to database with metrics
+    const conversationId = await saveConversation(currentSessionId, cleanMessage, aiResponse, responseTime);
 
-    console.log(`Response generated successfully (conversation ID: ${conversationId})`);
+    console.log(`Response generated successfully (conversation ID: ${conversationId}, time: ${responseTime}ms)`);
 
     res.json({
       success: true,
@@ -291,6 +397,7 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
       sessionId: currentSessionId,
       conversationId: conversationId,
       timestamp: new Date().toISOString(),
+      responseTime: responseTime,
       source: 'openai-gpt-4o-mini'
     });
 
@@ -304,15 +411,42 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
   }
 });
 
-// Session management endpoints
+// Session Management Endpoints
+
+// Get all sessions
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const result = await getAllSessions(limit, offset);
+    
+    res.json({
+      success: true,
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Sessions retrieval error:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve sessions',
+      code: 'SESSIONS_ERROR'
+    });
+  }
+});
+
+// Create new session
 app.post('/api/chat/session', async (req, res) => {
   try {
+    const { sessionName } = req.body;
     const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    await createSession(sessionId);
+    
+    await createSession(sessionId, sessionName);
     
     res.json({
       success: true,
       sessionId: sessionId,
+      sessionName: sessionName || `Sesja ${new Date().toLocaleDateString('pl-PL')}`,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -324,16 +458,46 @@ app.post('/api/chat/session', async (req, res) => {
   }
 });
 
+// Get session info
+app.get('/api/chat/session/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const sessionInfo = await getSessionInfo(sessionId);
+    
+    if (!sessionInfo) {
+      return res.status(404).json({
+        error: 'Session not found',
+        code: 'SESSION_NOT_FOUND'
+      });
+    }
+    
+    res.json({
+      success: true,
+      session: sessionInfo,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Session info error:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve session info',
+      code: 'SESSION_INFO_ERROR'
+    });
+  }
+});
+
+// Get conversation history with pagination
 app.get('/api/chat/history/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const history = await getConversationHistory(sessionId);
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const result = await getConversationHistory(sessionId, limit, offset);
     
     res.json({
       success: true,
       sessionId: sessionId,
-      history: history,
-      count: history.length,
+      ...result,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -345,23 +509,92 @@ app.get('/api/chat/history/:sessionId', async (req, res) => {
   }
 });
 
-app.delete('/api/chat/session/:sessionId', async (req, res) => {
+// Update session name
+app.patch('/api/chat/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    await pool.query('DELETE FROM conversations WHERE session_id = $1', [sessionId]);
-    await pool.query('DELETE FROM sessions WHERE session_id = $1', [sessionId]);
+    const { sessionName } = req.body;
+    
+    if (!sessionName || sessionName.trim().length === 0) {
+      return res.status(400).json({
+        error: 'Session name is required',
+        code: 'INVALID_SESSION_NAME'
+      });
+    }
+    
+    await pool.query(
+      'UPDATE sessions SET session_name = $1 WHERE session_id = $2',
+      [sessionName.trim(), sessionId]
+    );
     
     res.json({
       success: true,
-      message: 'Session and history cleared',
+      message: 'Session name updated',
+      sessionId: sessionId,
+      sessionName: sessionName.trim(),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Session update error:', error);
+    res.status(500).json({
+      error: 'Failed to update session',
+      code: 'SESSION_UPDATE_ERROR'
+    });
+  }
+});
+
+// Delete session (soft delete)
+app.delete('/api/chat/session/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Soft delete - mark as inactive instead of actual deletion
+    await pool.query('UPDATE sessions SET is_active = FALSE WHERE session_id = $1', [sessionId]);
+    
+    res.json({
+      success: true,
+      message: 'Session deactivated successfully',
       sessionId: sessionId,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Session deletion error:', error);
     res.status(500).json({
-      error: 'Failed to clear session',
+      error: 'Failed to delete session',
       code: 'DELETE_ERROR'
+    });
+  }
+});
+
+// Bulk delete sessions
+app.delete('/api/sessions/bulk', async (req, res) => {
+  try {
+    const { sessionIds } = req.body;
+    
+    if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+      return res.status(400).json({
+        error: 'Session IDs array is required',
+        code: 'INVALID_SESSION_IDS'
+      });
+    }
+    
+    const placeholders = sessionIds.map((_, index) => `$${index + 1}`).join(',');
+    await pool.query(
+      `UPDATE sessions SET is_active = FALSE WHERE session_id IN (${placeholders})`,
+      sessionIds
+    );
+    
+    res.json({
+      success: true,
+      message: `${sessionIds.length} sessions deactivated`,
+      deactivatedCount: sessionIds.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Bulk session deletion error:', error);
+    res.status(500).json({
+      error: 'Failed to delete sessions',
+      code: 'BULK_DELETE_ERROR'
     });
   }
 });
@@ -379,7 +612,19 @@ app.use((err, req, res, next) => {
 app.use('*', (req, res) => {
   res.status(404).json({
     error: 'Endpoint not found',
-    code: 'NOT_FOUND'
+    code: 'NOT_FOUND',
+    availableEndpoints: [
+      'GET /',
+      'GET /health',
+      'POST /api/chat',
+      'GET /api/sessions',
+      'POST /api/chat/session',
+      'GET /api/chat/session/:sessionId',
+      'GET /api/chat/history/:sessionId',
+      'PATCH /api/chat/session/:sessionId',
+      'DELETE /api/chat/session/:sessionId',
+      'DELETE /api/sessions/bulk'
+    ]
   });
 });
 
@@ -394,7 +639,9 @@ app.listen(port, () => {
   console.log(`AI HR Backend running on port ${port}`);
   console.log(`Health check: http://localhost:${port}/health`);
   console.log(`Chat endpoint: http://localhost:${port}/api/chat`);
-  console.log(`Features: OpenAI GPT-4o-mini, PostgreSQL, Session Management`);
-  console.log(`Database: PostgreSQL connected`);
+  console.log(`Sessions endpoint: http://localhost:${port}/api/sessions`);
+  console.log(`Features: OpenAI GPT-4o-mini, PostgreSQL, Advanced Session Management`);
+  console.log(`Database: PostgreSQL connected with indexes`);
   console.log(`AI: OpenAI API configured`);
+  console.log(`Version: 2.1.0 - Advanced Session Management`);
 });
