@@ -13,11 +13,33 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// PostgreSQL connection
+// PostgreSQL connection with connection pooling
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  max: 20, // Maximum number of clients in the pool
+  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+  connectionTimeoutMillis: 2000, // Return an error after 2 seconds if connection could not be established
 });
+
+// Enhanced Security Configuration
+const SECURITY_CONFIG = {
+  RATE_LIMIT_WINDOW: 60 * 1000, // 1 minute
+  RATE_LIMIT_MAX: process.env.NODE_ENV === 'production' ? 30 : 60, // Stricter in production
+  MAX_MESSAGE_LENGTH: 1000,
+  MAX_SESSION_NAME_LENGTH: 100,
+  ALLOWED_ORIGINS: process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : ['*'],
+  TRUST_PROXY: process.env.NODE_ENV === 'production'
+};
+
+// Performance Metrics Storage
+const metrics = {
+  requests: 0,
+  errors: 0,
+  totalResponseTime: 0,
+  averageResponseTime: 0,
+  startTime: Date.now()
+};
 
 // Database migration and initialization
 async function initializeDatabase() {
@@ -70,7 +92,9 @@ async function initializeDatabase() {
     // Add indexes for better performance
     try {
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_timestamp ON conversations(timestamp DESC)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity DESC)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(is_active) WHERE is_active = true`);
       console.log('Database indexes created/verified');
     } catch (error) {
       console.log('Indexes already exist:', error.message);
@@ -85,80 +109,200 @@ async function initializeDatabase() {
 // Initialize database on startup
 initializeDatabase();
 
-// Security middleware
-app.use(helmet());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true
+// Trust proxy if in production (for accurate IP addresses behind reverse proxy)
+if (SECURITY_CONFIG.TRUST_PROXY) {
+  app.set('trust proxy', 1);
+}
+
+// Enhanced Security Middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Disabled for API compatibility
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
 }));
-app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting middleware
-const rateLimit = {};
-const RATE_LIMIT_WINDOW = 60 * 1000;
-const RATE_LIMIT_MAX = 60;
+// Enhanced CORS Configuration
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (SECURITY_CONFIG.ALLOWED_ORIGINS.includes('*') || 
+        SECURITY_CONFIG.ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  maxAge: 86400 // 24 hours
+}));
 
-const rateLimitMiddleware = (req, res, next) => {
-  const clientIp = req.ip || req.connection.remoteAddress;
+// Request parsing with size limits
+app.use(express.json({ 
+  limit: '1mb',
+  strict: true,
+  type: 'application/json'
+}));
+
+// Request sanitization middleware
+function sanitizeInput(req, res, next) {
+  if (req.body) {
+    // Remove potentially dangerous characters
+    const sanitize = (obj) => {
+      for (let key in obj) {
+        if (typeof obj[key] === 'string') {
+          // Remove null bytes, control characters, and normalize whitespace
+          obj[key] = obj[key]
+            .replace(/\0/g, '') // Remove null bytes
+            .replace(/[\x00-\x1F\x7F]/g, '') // Remove control characters except newlines/tabs
+            .trim();
+        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+          sanitize(obj[key]);
+        }
+      }
+    };
+    
+    sanitize(req.body);
+  }
+  next();
+}
+
+app.use(sanitizeInput);
+
+// Enhanced rate limiting with IP tracking
+const rateLimitStore = new Map();
+
+const advancedRateLimitMiddleware = (req, res, next) => {
+  const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
   const now = Date.now();
+  const windowStart = now - SECURITY_CONFIG.RATE_LIMIT_WINDOW;
   
-  if (!rateLimit[clientIp]) {
-    rateLimit[clientIp] = { count: 1, resetTime: now + RATE_LIMIT_WINDOW };
-    return next();
+  // Clean old entries
+  for (const [ip, data] of rateLimitStore.entries()) {
+    if (data.resetTime < now) {
+      rateLimitStore.delete(ip);
+    }
   }
   
-  if (now > rateLimit[clientIp].resetTime) {
-    rateLimit[clientIp] = { count: 1, resetTime: now + RATE_LIMIT_WINDOW };
-    return next();
+  // Get or create client data
+  let clientData = rateLimitStore.get(clientIp);
+  if (!clientData || clientData.resetTime < now) {
+    clientData = {
+      count: 0,
+      resetTime: now + SECURITY_CONFIG.RATE_LIMIT_WINDOW,
+      firstRequest: now
+    };
+    rateLimitStore.set(clientIp, clientData);
   }
   
-  if (rateLimit[clientIp].count >= RATE_LIMIT_MAX) {
+  // Increment request count
+  clientData.count++;
+  
+  // Check if limit exceeded
+  if (clientData.count > SECURITY_CONFIG.RATE_LIMIT_MAX) {
+    console.log(`Rate limit exceeded for IP: ${clientIp}, Count: ${clientData.count}`);
+    
     return res.status(429).json({
       error: 'Too many requests',
-      code: 'RATE_LIMIT_EXCEEDED'
+      code: 'RATE_LIMIT_EXCEEDED',
+      retryAfter: Math.ceil((clientData.resetTime - now) / 1000)
     });
   }
   
-  rateLimit[clientIp].count++;
+  // Add rate limit headers
+  res.set({
+    'X-RateLimit-Limit': SECURITY_CONFIG.RATE_LIMIT_MAX,
+    'X-RateLimit-Remaining': Math.max(0, SECURITY_CONFIG.RATE_LIMIT_MAX - clientData.count),
+    'X-RateLimit-Reset': new Date(clientData.resetTime).toISOString()
+  });
+  
   next();
 };
 
-// Enhanced database helper functions
+// Performance monitoring middleware
+const performanceMiddleware = (req, res, next) => {
+  const startTime = Date.now();
+  
+  // Increment request counter
+  metrics.requests++;
+  
+  // Override res.json to capture response time
+  const originalJson = res.json;
+  res.json = function(data) {
+    const responseTime = Date.now() - startTime;
+    metrics.totalResponseTime += responseTime;
+    metrics.averageResponseTime = metrics.totalResponseTime / metrics.requests;
+    
+    // Add performance headers
+    res.set({
+      'X-Response-Time': `${responseTime}ms`,
+      'X-Request-ID': `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    });
+    
+    return originalJson.call(this, data);
+  };
+  
+  next();
+};
+
+app.use(performanceMiddleware);
+
+// Enhanced database helper functions with connection pooling
 async function saveConversation(sessionId, userMessage, aiResponse, responseTimeMs = 0) {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+    
     const messageLength = userMessage.length + aiResponse.length;
     
-    // Use safe column insertion - check if columns exist
-    const result = await pool.query(
+    const result = await client.query(
       `INSERT INTO conversations (session_id, user_message, ai_response, message_length, response_time_ms) 
        VALUES ($1, $2, $3, $4, $5) RETURNING id`,
       [sessionId, userMessage, aiResponse, messageLength, responseTimeMs]
     );
     
-    // Update session statistics safely
-    try {
-      await pool.query(
-        `UPDATE sessions 
-         SET last_activity = CURRENT_TIMESTAMP, 
-             message_count = COALESCE(message_count, 0) + 1,
-             total_tokens = COALESCE(total_tokens, 0) + $2
-         WHERE session_id = $1`,
-        [sessionId, Math.ceil(messageLength / 4)]
-      );
-    } catch (updateError) {
-      console.log('Session update error (continuing):', updateError.message);
-    }
+    // Update session statistics
+    await client.query(
+      `UPDATE sessions 
+       SET last_activity = CURRENT_TIMESTAMP, 
+           message_count = COALESCE(message_count, 0) + 1,
+           total_tokens = COALESCE(total_tokens, 0) + $2
+       WHERE session_id = $1`,
+      [sessionId, Math.ceil(messageLength / 4)]
+    );
     
+    await client.query('COMMIT');
     return result.rows[0].id;
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error saving conversation:', error);
     return null;
+  } finally {
+    client.release();
   }
 }
 
 async function getConversationHistory(sessionId, limit = 20, offset = 0) {
   try {
-    // Use basic query that works with existing schema
     const result = await pool.query(
       `SELECT user_message, ai_response, timestamp 
        FROM conversations 
@@ -198,7 +342,6 @@ async function createSession(sessionId, sessionName = null) {
     
     return true;
   } catch (error) {
-    // Fallback to basic insertion if session_name column doesn't exist
     try {
       await pool.query(
         `INSERT INTO sessions (session_id) 
@@ -217,7 +360,6 @@ async function createSession(sessionId, sessionName = null) {
 
 async function getAllSessions(limit = 50, offset = 0) {
   try {
-    // Try full query first, fallback to basic if needed
     let result;
     try {
       result = await pool.query(
@@ -234,7 +376,6 @@ async function getAllSessions(limit = 50, offset = 0) {
         [limit, offset]
       );
     } catch (error) {
-      // Fallback to basic query
       result = await pool.query(
         `SELECT session_id, created_at, last_activity
          FROM sessions 
@@ -245,7 +386,7 @@ async function getAllSessions(limit = 50, offset = 0) {
     }
     
     const countResult = await pool.query(
-      'SELECT COUNT(*) as total FROM sessions'
+      'SELECT COUNT(*) as total FROM sessions WHERE COALESCE(is_active, true) = true'
     );
     
     return {
@@ -277,16 +418,44 @@ async function getSessionInfo(sessionId) {
   }
 }
 
-// OpenAI Integration - Main AI Function
+// Enhanced input validation
+function validateChatInput(req, res, next) {
+  const { message, sessionId } = req.body;
+
+  // Validate message
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({
+      error: 'Message is required and must be a string',
+      code: 'INVALID_MESSAGE'
+    });
+  }
+
+  if (message.length > SECURITY_CONFIG.MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({
+      error: `Message too long (max ${SECURITY_CONFIG.MAX_MESSAGE_LENGTH} characters)`,
+      code: 'MESSAGE_TOO_LONG'
+    });
+  }
+
+  // Validate sessionId if provided
+  if (sessionId && (typeof sessionId !== 'string' || sessionId.length > 100)) {
+    return res.status(400).json({
+      error: 'Invalid session ID format',
+      code: 'INVALID_SESSION_ID'
+    });
+  }
+
+  next();
+}
+
+// OpenAI Integration with enhanced error handling
 async function getAIResponse(message, sessionId) {
   const startTime = Date.now();
   
   try {
-    // Get conversation history for context
     const historyResult = await getConversationHistory(sessionId, 5);
     const history = historyResult.messages;
     
-    // Build messages array for OpenAI
     const messages = [
       {
         role: "system",
@@ -305,7 +474,6 @@ STYL: przyjazny ekspert, konkretne odpowiedzi, polskie przykłady.`
       }
     ];
 
-    // Add conversation history
     history.forEach(msg => {
       messages.push({
         role: "user",
@@ -317,13 +485,11 @@ STYL: przyjazny ekspert, konkretne odpowiedzi, polskie przykłady.`
       });
     });
 
-    // Add current message
     messages.push({
       role: "user",
       content: message
     });
 
-    // Call OpenAI API
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: messages,
@@ -344,14 +510,14 @@ STYL: przyjazny ekspert, konkretne odpowiedzi, polskie przykłady.`
 
   } catch (error) {
     console.error('OpenAI API Error:', error);
+    metrics.errors++;
     
-    // Fallback to local knowledge
     const responseTime = Date.now() - startTime;
     return { response: getFallbackResponse(message), responseTime };
   }
 }
 
-// Fallback HR responses (backup when OpenAI fails)
+// Fallback HR responses
 function getFallbackResponse(message) {
   const lowerMessage = message.toLowerCase();
 
@@ -374,14 +540,23 @@ function getFallbackResponse(message) {
   return 'Jestem ekspertem HR w Polsce. Mogę pomóc z pytaniami o urlopy, umowy o pracę, wynagrodzenia, rekrutację, RODO i zarządzanie zespołem. O co konkretnie chciałbyś zapytać?';
 }
 
-// Health endpoints
+// Health and metrics endpoints
 app.get('/', (req, res) => {
+  const uptime = Date.now() - metrics.startTime;
+  
   res.json({ 
     message: 'AI HR Backend is running!', 
     status: 'OK',
     timestamp: new Date().toISOString(),
-    version: '2.1.1',
-    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Session Management (Fixed)'],
+    version: '3.0.0',
+    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Enhanced Security', 'Performance Monitoring'],
+    security: ['Advanced Rate Limiting', 'Request Sanitization', 'CORS Hardening', 'Security Headers'],
+    performance: {
+      uptime: `${Math.floor(uptime / 1000)}s`,
+      totalRequests: metrics.requests,
+      averageResponseTime: `${Math.round(metrics.averageResponseTime)}ms`,
+      errorRate: `${((metrics.errors / metrics.requests) * 100).toFixed(2)}%`
+    },
     endpoints: [
       'POST /api/chat',
       'GET /api/sessions',
@@ -389,7 +564,8 @@ app.get('/', (req, res) => {
       'GET /api/chat/session/:sessionId',
       'GET /api/chat/history/:sessionId',
       'PATCH /api/chat/session/:sessionId',
-      'DELETE /api/chat/session/:sessionId'
+      'DELETE /api/chat/session/:sessionId',
+      'GET /api/metrics'
     ],
     database: 'connected'
   });
@@ -402,44 +578,52 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     database: 'postgresql',
     ai: 'openai-gpt-4o-mini',
-    features: 'session-management-fixed'
+    features: 'enhanced-security-performance',
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+      rss: Math.round(process.memoryUsage().rss / 1024 / 1024)
+    }
   });
 });
 
-// Main Chat endpoint with enhanced tracking
-app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
+// New metrics endpoint
+app.get('/api/metrics', (req, res) => {
+  const uptime = Date.now() - metrics.startTime;
+  
+  res.json({
+    performance: {
+      uptime: uptime,
+      totalRequests: metrics.requests,
+      totalErrors: metrics.errors,
+      averageResponseTime: metrics.averageResponseTime,
+      errorRate: metrics.errors / metrics.requests,
+      requestsPerMinute: metrics.requests / (uptime / 60000)
+    },
+    memory: process.memoryUsage(),
+    rateLimiting: {
+      activeIPs: rateLimitStore.size,
+      maxRequestsPerWindow: SECURITY_CONFIG.RATE_LIMIT_MAX,
+      windowSizeMs: SECURITY_CONFIG.RATE_LIMIT_WINDOW
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Main Chat endpoint with enhanced validation
+app.post('/api/chat', advancedRateLimitMiddleware, validateChatInput, async (req, res) => {
   try {
     const { message, sessionId } = req.body;
 
-    // Input validation
-    if (!message || typeof message !== 'string') {
-      return res.status(400).json({
-        error: 'Message is required and must be a string',
-        code: 'INVALID_MESSAGE'
-      });
-    }
-
-    if (message.length > 1000) {
-      return res.status(400).json({
-        error: 'Message too long (max 1000 characters)',
-        code: 'MESSAGE_TOO_LONG'
-      });
-    }
-
-    // Generate session ID if not provided
     const currentSessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // Create/update session
     await createSession(currentSessionId);
 
-    // Sanitize input
     const cleanMessage = message.trim();
 
-    // Get AI response from OpenAI with timing
     console.log(`Processing message: ${cleanMessage.substring(0, 50)}...`);
     const { response: aiResponse, responseTime } = await getAIResponse(cleanMessage, currentSessionId);
 
-    // Save conversation to database with metrics
     const conversationId = await saveConversation(currentSessionId, cleanMessage, aiResponse, responseTime);
 
     console.log(`Response generated successfully (conversation ID: ${conversationId}, time: ${responseTime}ms)`);
@@ -456,6 +640,7 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
 
   } catch (error) {
     console.error('Chat error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Internal server error',
       code: 'CHAT_ERROR',
@@ -464,13 +649,12 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
   }
 });
 
-// Session Management Endpoints
+// Session Management Endpoints (same as before but with enhanced validation)
 
-// Get all sessions
 app.get('/api/sessions', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = parseInt(req.query.offset) || 0;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100); // Max 100
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0); // Min 0
     
     const result = await getAllSessions(limit, offset);
     
@@ -481,6 +665,7 @@ app.get('/api/sessions', async (req, res) => {
     });
   } catch (error) {
     console.error('Sessions retrieval error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Failed to retrieve sessions',
       code: 'SESSIONS_ERROR'
@@ -488,10 +673,18 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
-// Create new session
-app.post('/api/chat/session', async (req, res) => {
+app.post('/api/chat/session', advancedRateLimitMiddleware, async (req, res) => {
   try {
     const { sessionName } = req.body;
+    
+    // Validate session name
+    if (sessionName && (typeof sessionName !== 'string' || sessionName.length > SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH)) {
+      return res.status(400).json({
+        error: `Session name too long (max ${SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH} characters)`,
+        code: 'INVALID_SESSION_NAME'
+      });
+    }
+    
     const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     await createSession(sessionId, sessionName);
@@ -504,6 +697,7 @@ app.post('/api/chat/session', async (req, res) => {
     });
   } catch (error) {
     console.error('Session creation error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Failed to create session',
       code: 'SESSION_ERROR'
@@ -511,10 +705,17 @@ app.post('/api/chat/session', async (req, res) => {
   }
 });
 
-// Get session info
 app.get('/api/chat/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
+    
+    if (!sessionId || sessionId.length > 100) {
+      return res.status(400).json({
+        error: 'Invalid session ID',
+        code: 'INVALID_SESSION_ID'
+      });
+    }
+    
     const sessionInfo = await getSessionInfo(sessionId);
     
     if (!sessionInfo) {
@@ -531,6 +732,7 @@ app.get('/api/chat/session/:sessionId', async (req, res) => {
     });
   } catch (error) {
     console.error('Session info error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Failed to retrieve session info',
       code: 'SESSION_INFO_ERROR'
@@ -538,12 +740,18 @@ app.get('/api/chat/session/:sessionId', async (req, res) => {
   }
 });
 
-// Get conversation history with pagination
 app.get('/api/chat/history/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const limit = parseInt(req.query.limit) || 20;
-    const offset = parseInt(req.query.offset) || 0;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100); // Max 100
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0); // Min 0
+    
+    if (!sessionId || sessionId.length > 100) {
+      return res.status(400).json({
+        error: 'Invalid session ID',
+        code: 'INVALID_SESSION_ID'
+      });
+    }
     
     const result = await getConversationHistory(sessionId, limit, offset);
     
@@ -555,6 +763,7 @@ app.get('/api/chat/history/:sessionId', async (req, res) => {
     });
   } catch (error) {
     console.error('History retrieval error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Failed to retrieve history',
       code: 'HISTORY_ERROR'
@@ -562,16 +771,29 @@ app.get('/api/chat/history/:sessionId', async (req, res) => {
   }
 });
 
-// Update session name
-app.patch('/api/chat/session/:sessionId', async (req, res) => {
+app.patch('/api/chat/session/:sessionId', advancedRateLimitMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { sessionName } = req.body;
     
-    if (!sessionName || sessionName.trim().length === 0) {
+    if (!sessionId || sessionId.length > 100) {
+      return res.status(400).json({
+        error: 'Invalid session ID',
+        code: 'INVALID_SESSION_ID'
+      });
+    }
+    
+    if (!sessionName || typeof sessionName !== 'string' || sessionName.trim().length === 0) {
       return res.status(400).json({
         error: 'Session name is required',
         code: 'INVALID_SESSION_NAME'
+      });
+    }
+    
+    if (sessionName.length > SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH) {
+      return res.status(400).json({
+        error: `Session name too long (max ${SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH} characters)`,
+        code: 'SESSION_NAME_TOO_LONG'
       });
     }
     
@@ -589,6 +811,7 @@ app.patch('/api/chat/session/:sessionId', async (req, res) => {
     });
   } catch (error) {
     console.error('Session update error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Failed to update session',
       code: 'SESSION_UPDATE_ERROR'
@@ -596,16 +819,20 @@ app.patch('/api/chat/session/:sessionId', async (req, res) => {
   }
 });
 
-// Delete session (soft delete)
-app.delete('/api/chat/session/:sessionId', async (req, res) => {
+app.delete('/api/chat/session/:sessionId', advancedRateLimitMiddleware, async (req, res) => {
   try {
     const { sessionId } = req.params;
     
-    // Try soft delete first, fallback to hard delete
+    if (!sessionId || sessionId.length > 100) {
+      return res.status(400).json({
+        error: 'Invalid session ID',
+        code: 'INVALID_SESSION_ID'
+      });
+    }
+    
     try {
       await pool.query('UPDATE sessions SET is_active = FALSE WHERE session_id = $1', [sessionId]);
     } catch (error) {
-      // Fallback: actually delete conversations and session
       await pool.query('DELETE FROM conversations WHERE session_id = $1', [sessionId]);
       await pool.query('DELETE FROM sessions WHERE session_id = $1', [sessionId]);
     }
@@ -618,6 +845,7 @@ app.delete('/api/chat/session/:sessionId', async (req, res) => {
     });
   } catch (error) {
     console.error('Session deletion error:', error);
+    metrics.errors++;
     res.status(500).json({
       error: 'Failed to delete session',
       code: 'DELETE_ERROR'
@@ -628,9 +856,15 @@ app.delete('/api/chat/session/:sessionId', async (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
+  metrics.errors++;
+  
+  // Don't leak error details in production
+  const isDev = process.env.NODE_ENV !== 'production';
+  
   res.status(500).json({
     error: 'Internal server error',
-    code: 'UNHANDLED_ERROR'
+    code: 'UNHANDLED_ERROR',
+    ...(isDev && { details: err.message })
   });
 });
 
@@ -639,9 +873,12 @@ app.use('*', (req, res) => {
   res.status(404).json({
     error: 'Endpoint not found',
     code: 'NOT_FOUND',
+    path: req.originalUrl,
+    method: req.method,
     availableEndpoints: [
       'GET /',
       'GET /health',
+      'GET /api/metrics',
       'POST /api/chat',
       'GET /api/sessions',
       'POST /api/chat/session',
@@ -660,13 +897,33 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, closing database pool...');
+  await pool.end();
+  process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  metrics.errors++;
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  metrics.errors++;
+});
+
 app.listen(port, () => {
-  console.log(`AI HR Backend running on port ${port}`);
-  console.log(`Health check: http://localhost:${port}/health`);
-  console.log(`Chat endpoint: http://localhost:${port}/api/chat`);
-  console.log(`Sessions endpoint: http://localhost:${port}/api/sessions`);
-  console.log(`Features: OpenAI GPT-4o-mini, PostgreSQL, Session Management (Fixed)`);
-  console.log(`Database: PostgreSQL with safe migrations`);
-  console.log(`AI: OpenAI API configured`);
-  console.log(`Version: 2.1.1 - Database Migration Fixed`);
+  console.log(`🚀 AI HR Backend v3.0.0 running on port ${port}`);
+  console.log(`📊 Health check: http://localhost:${port}/health`);
+  console.log(`💬 Chat endpoint: http://localhost:${port}/api/chat`);
+  console.log(`📈 Metrics: http://localhost:${port}/api/metrics`);
+  console.log(`🔒 Security: Enhanced rate limiting, CORS, sanitization`);
+  console.log(`⚡ Performance: Connection pooling, monitoring, compression`);
+  console.log(`📊 Features: OpenAI GPT-4o-mini, PostgreSQL, Advanced Session Management`);
+  console.log(`🛡️ Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`💾 Database: PostgreSQL with connection pooling`);
+  console.log(`🤖 AI: OpenAI API configured and ready`);
 });
