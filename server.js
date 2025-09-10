@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const path = require('path');
 const { Pool } = require('pg');
 const OpenAI = require('openai');
 require('dotenv').config();
@@ -119,10 +120,10 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'"],
+      connectSrc: ["'self'", "https://api.openai.com"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
@@ -548,8 +549,8 @@ app.get('/', (req, res) => {
     message: 'AI HR Backend is running!', 
     status: 'OK',
     timestamp: new Date().toISOString(),
-    version: '3.0.0',
-    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Enhanced Security', 'Performance Monitoring'],
+    version: '4.0.0',
+    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Enhanced Security', 'Performance Monitoring', 'Frontend Integration'],
     security: ['Advanced Rate Limiting', 'Request Sanitization', 'CORS Hardening', 'Security Headers'],
     performance: {
       uptime: `${Math.floor(uptime / 1000)}s`,
@@ -559,7 +560,7 @@ app.get('/', (req, res) => {
     },
     endpoints: [
       'POST /api/chat',
-      'GET /api/sessions',
+      'GET /api/sessions', 
       'POST /api/chat/session',
       'GET /api/chat/session/:sessionId',
       'GET /api/chat/history/:sessionId',
@@ -567,7 +568,8 @@ app.get('/', (req, res) => {
       'DELETE /api/chat/session/:sessionId',
       'GET /api/metrics'
     ],
-    database: 'connected'
+    database: 'connected',
+    frontend: 'integrated'
   });
 });
 
@@ -578,7 +580,7 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     database: 'postgresql',
     ai: 'openai-gpt-4o-mini',
-    features: 'enhanced-security-performance',
+    features: 'enhanced-security-performance-frontend',
     memory: {
       used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
       total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
@@ -649,7 +651,7 @@ app.post('/api/chat', advancedRateLimitMiddleware, validateChatInput, async (req
   }
 });
 
-// Session Management Endpoints (same as before but with enhanced validation)
+// Session Management Endpoints
 
 app.get('/api/sessions', async (req, res) => {
   try {
@@ -853,6 +855,25 @@ app.delete('/api/chat/session/:sessionId', advancedRateLimitMiddleware, async (r
   }
 });
 
+// Serve static files from React build (Frontend Integration)
+if (process.env.NODE_ENV === 'production') {
+  // Serve static files from dist directory
+  app.use(express.static(path.join(__dirname, 'dist')));
+  
+  // Handle React routing - send all non-API requests to React
+  app.get('*', (req, res, next) => {
+    // Skip API routes and health checks
+    if (req.path.startsWith('/api/') || 
+        req.path.startsWith('/health') || 
+        req.path.startsWith('/metrics') ||
+        req.path === '/') {
+      return next();
+    }
+    
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  });
+}
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
@@ -868,17 +889,14 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
+// 404 handler for API routes only
+app.use('/api/*', (req, res) => {
   res.status(404).json({
-    error: 'Endpoint not found',
+    error: 'API endpoint not found',
     code: 'NOT_FOUND',
     path: req.originalUrl,
     method: req.method,
     availableEndpoints: [
-      'GET /',
-      'GET /health',
-      'GET /api/metrics',
       'POST /api/chat',
       'GET /api/sessions',
       'POST /api/chat/session',
@@ -916,13 +934,14 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 app.listen(port, () => {
-  console.log(`🚀 AI HR Backend v3.0.0 running on port ${port}`);
+  console.log(`🚀 AI HR Backend v4.0.0 running on port ${port}`);
   console.log(`📊 Health check: http://localhost:${port}/health`);
   console.log(`💬 Chat endpoint: http://localhost:${port}/api/chat`);
   console.log(`📈 Metrics: http://localhost:${port}/api/metrics`);
   console.log(`🔒 Security: Enhanced rate limiting, CORS, sanitization`);
   console.log(`⚡ Performance: Connection pooling, monitoring, compression`);
   console.log(`📊 Features: OpenAI GPT-4o-mini, PostgreSQL, Advanced Session Management`);
+  console.log(`🌐 Frontend: Integrated static file serving`);
   console.log(`🛡️ Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`💾 Database: PostgreSQL with connection pooling`);
   console.log(`🤖 AI: OpenAI API configured and ready`);
