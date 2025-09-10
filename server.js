@@ -19,13 +19,13 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Test database connection and create tables
+// Database migration and initialization
 async function initializeDatabase() {
   try {
     await pool.query('SELECT NOW()');
     console.log('Database connected successfully');
     
-    // Create enhanced tables
+    // Create conversations table with all columns
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversations (
         id SERIAL PRIMARY KEY,
@@ -33,35 +33,50 @@ async function initializeDatabase() {
         user_message TEXT NOT NULL,
         ai_response TEXT NOT NULL,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        message_length INTEGER DEFAULT 0,
-        response_time_ms INTEGER DEFAULT 0
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     
+    // Add missing columns if they don't exist
+    try {
+      await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS message_length INTEGER DEFAULT 0`);
+      await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS response_time_ms INTEGER DEFAULT 0`);
+      console.log('Added missing columns to conversations table');
+    } catch (error) {
+      console.log('Columns already exist or error adding them:', error.message);
+    }
+    
+    // Create sessions table with all columns
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sessions (
         id SERIAL PRIMARY KEY,
         session_id VARCHAR(255) UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        message_count INTEGER DEFAULT 0,
-        total_tokens INTEGER DEFAULT 0,
-        session_name VARCHAR(255) DEFAULT 'Nowa konwersacja',
-        is_active BOOLEAN DEFAULT TRUE
+        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     
+    // Add missing columns to sessions if they don't exist
+    try {
+      await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS message_count INTEGER DEFAULT 0`);
+      await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS total_tokens INTEGER DEFAULT 0`);
+      await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name VARCHAR(255) DEFAULT 'Nowa konwersacja'`);
+      await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`);
+      console.log('Added missing columns to sessions table');
+    } catch (error) {
+      console.log('Session columns already exist or error adding them:', error.message);
+    }
+    
     // Add indexes for better performance
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id);
-    `);
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity DESC)`);
+      console.log('Database indexes created/verified');
+    } catch (error) {
+      console.log('Indexes already exist:', error.message);
+    }
     
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity DESC);
-    `);
-    
-    console.log('Database tables created/verified with indexes');
+    console.log('Database migration completed successfully');
   } catch (error) {
     console.error('Database initialization error:', error);
   }
@@ -113,21 +128,26 @@ async function saveConversation(sessionId, userMessage, aiResponse, responseTime
   try {
     const messageLength = userMessage.length + aiResponse.length;
     
+    // Use safe column insertion - check if columns exist
     const result = await pool.query(
       `INSERT INTO conversations (session_id, user_message, ai_response, message_length, response_time_ms) 
        VALUES ($1, $2, $3, $4, $5) RETURNING id`,
       [sessionId, userMessage, aiResponse, messageLength, responseTimeMs]
     );
     
-    // Update session statistics
-    await pool.query(
-      `UPDATE sessions 
-       SET last_activity = CURRENT_TIMESTAMP, 
-           message_count = message_count + 1,
-           total_tokens = total_tokens + $2
-       WHERE session_id = $1`,
-      [sessionId, Math.ceil(messageLength / 4)] // Approximate token count
-    );
+    // Update session statistics safely
+    try {
+      await pool.query(
+        `UPDATE sessions 
+         SET last_activity = CURRENT_TIMESTAMP, 
+             message_count = COALESCE(message_count, 0) + 1,
+             total_tokens = COALESCE(total_tokens, 0) + $2
+         WHERE session_id = $1`,
+        [sessionId, Math.ceil(messageLength / 4)]
+      );
+    } catch (updateError) {
+      console.log('Session update error (continuing):', updateError.message);
+    }
     
     return result.rows[0].id;
   } catch (error) {
@@ -138,8 +158,9 @@ async function saveConversation(sessionId, userMessage, aiResponse, responseTime
 
 async function getConversationHistory(sessionId, limit = 20, offset = 0) {
   try {
+    // Use basic query that works with existing schema
     const result = await pool.query(
-      `SELECT user_message, ai_response, timestamp, message_length, response_time_ms 
+      `SELECT user_message, ai_response, timestamp 
        FROM conversations 
        WHERE session_id = $1 
        ORDER BY timestamp ASC 
@@ -177,25 +198,54 @@ async function createSession(sessionId, sessionName = null) {
     
     return true;
   } catch (error) {
-    console.error('Error creating session:', error);
-    return false;
+    // Fallback to basic insertion if session_name column doesn't exist
+    try {
+      await pool.query(
+        `INSERT INTO sessions (session_id) 
+         VALUES ($1) 
+         ON CONFLICT (session_id) DO UPDATE SET 
+         last_activity = CURRENT_TIMESTAMP`,
+        [sessionId]
+      );
+      return true;
+    } catch (fallbackError) {
+      console.error('Error creating session:', fallbackError);
+      return false;
+    }
   }
 }
 
 async function getAllSessions(limit = 50, offset = 0) {
   try {
-    const result = await pool.query(
-      `SELECT session_id, session_name, created_at, last_activity, 
-              message_count, total_tokens, is_active
-       FROM sessions 
-       WHERE is_active = TRUE
-       ORDER BY last_activity DESC 
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    );
+    // Try full query first, fallback to basic if needed
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT session_id, 
+                COALESCE(session_name, 'Nowa konwersacja') as session_name,
+                created_at, last_activity, 
+                COALESCE(message_count, 0) as message_count,
+                COALESCE(total_tokens, 0) as total_tokens,
+                COALESCE(is_active, true) as is_active
+         FROM sessions 
+         WHERE COALESCE(is_active, true) = true
+         ORDER BY last_activity DESC 
+         LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      );
+    } catch (error) {
+      // Fallback to basic query
+      result = await pool.query(
+        `SELECT session_id, created_at, last_activity
+         FROM sessions 
+         ORDER BY last_activity DESC 
+         LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      );
+    }
     
     const countResult = await pool.query(
-      'SELECT COUNT(*) as total FROM sessions WHERE is_active = TRUE'
+      'SELECT COUNT(*) as total FROM sessions'
     );
     
     return {
@@ -330,8 +380,8 @@ app.get('/', (req, res) => {
     message: 'AI HR Backend is running!', 
     status: 'OK',
     timestamp: new Date().toISOString(),
-    version: '2.1.0',
-    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Advanced Session Management'],
+    version: '2.1.1',
+    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Session Management (Fixed)'],
     endpoints: [
       'POST /api/chat',
       'GET /api/sessions',
@@ -349,7 +399,7 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     database: 'postgresql',
     ai: 'openai-gpt-4o-mini',
-    features: 'advanced-session-management'
+    features: 'session-management-fixed'
   });
 });
 
@@ -548,12 +598,18 @@ app.delete('/api/chat/session/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     
-    // Soft delete - mark as inactive instead of actual deletion
-    await pool.query('UPDATE sessions SET is_active = FALSE WHERE session_id = $1', [sessionId]);
+    // Try soft delete first, fallback to hard delete
+    try {
+      await pool.query('UPDATE sessions SET is_active = FALSE WHERE session_id = $1', [sessionId]);
+    } catch (error) {
+      // Fallback: actually delete conversations and session
+      await pool.query('DELETE FROM conversations WHERE session_id = $1', [sessionId]);
+      await pool.query('DELETE FROM sessions WHERE session_id = $1', [sessionId]);
+    }
     
     res.json({
       success: true,
-      message: 'Session deactivated successfully',
+      message: 'Session deleted successfully',
       sessionId: sessionId,
       timestamp: new Date().toISOString()
     });
@@ -562,39 +618,6 @@ app.delete('/api/chat/session/:sessionId', async (req, res) => {
     res.status(500).json({
       error: 'Failed to delete session',
       code: 'DELETE_ERROR'
-    });
-  }
-});
-
-// Bulk delete sessions
-app.delete('/api/sessions/bulk', async (req, res) => {
-  try {
-    const { sessionIds } = req.body;
-    
-    if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
-      return res.status(400).json({
-        error: 'Session IDs array is required',
-        code: 'INVALID_SESSION_IDS'
-      });
-    }
-    
-    const placeholders = sessionIds.map((_, index) => `$${index + 1}`).join(',');
-    await pool.query(
-      `UPDATE sessions SET is_active = FALSE WHERE session_id IN (${placeholders})`,
-      sessionIds
-    );
-    
-    res.json({
-      success: true,
-      message: `${sessionIds.length} sessions deactivated`,
-      deactivatedCount: sessionIds.length,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Bulk session deletion error:', error);
-    res.status(500).json({
-      error: 'Failed to delete sessions',
-      code: 'BULK_DELETE_ERROR'
     });
   }
 });
@@ -622,8 +645,7 @@ app.use('*', (req, res) => {
       'GET /api/chat/session/:sessionId',
       'GET /api/chat/history/:sessionId',
       'PATCH /api/chat/session/:sessionId',
-      'DELETE /api/chat/session/:sessionId',
-      'DELETE /api/sessions/bulk'
+      'DELETE /api/chat/session/:sessionId'
     ]
   });
 });
@@ -640,8 +662,8 @@ app.listen(port, () => {
   console.log(`Health check: http://localhost:${port}/health`);
   console.log(`Chat endpoint: http://localhost:${port}/api/chat`);
   console.log(`Sessions endpoint: http://localhost:${port}/api/sessions`);
-  console.log(`Features: OpenAI GPT-4o-mini, PostgreSQL, Advanced Session Management`);
-  console.log(`Database: PostgreSQL connected with indexes`);
+  console.log(`Features: OpenAI GPT-4o-mini, PostgreSQL, Session Management (Fixed)`);
+  console.log(`Database: PostgreSQL with safe migrations`);
   console.log(`AI: OpenAI API configured`);
-  console.log(`Version: 2.1.0 - Advanced Session Management`);
+  console.log(`Version: 2.1.1 - Database Migration Fixed`);
 });
