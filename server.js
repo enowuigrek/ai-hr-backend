@@ -2,10 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const { Pool } = require('pg');
+const OpenAI = require('openai');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// OpenAI Configuration
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 // PostgreSQL connection
 const pool = new Pool({
@@ -127,35 +133,96 @@ async function createSession(sessionId) {
   }
 }
 
-// HR Knowledge base (fallback)
-const HR_KNOWLEDGE = {
-  'urlop macierzyński': 'Urlop macierzyński w Polsce wynosi 20 tygodni i przysługuje od 6. tygodnia przed przewidywaną datą porodu.',
-  'wypowiedzenie umowy': 'Okres wypowiedzenia zależy od stażu pracy: do 6 miesięcy - 2 tygodnie, od 6 miesięcy do 3 lat - 1 miesiąc, powyżej 3 lat - 3 miesiące.',
-  'urlop wypoczynkowy': 'Podstawowy urlop wynosi 20 dni (do 10 lat pracy) lub 26 dni (powyżej 10 lat pracy).',
-  'minimalne wynagrodzenie': 'Minimalne wynagrodzenie w 2024 roku wynosi 3 490 zł brutto miesięcznie.',
-  'godziny nadliczbowe': 'Limit godzin nadliczbowych to 150 godzin w roku dla jednego pracownika, maksymalnie 4 godziny dziennie.'
-};
+// OpenAI Integration - Main AI Function
+async function getAIResponse(message, sessionId) {
+  try {
+    // Get conversation history for context
+    const history = await getConversationHistory(sessionId, 5);
+    
+    // Build messages array for OpenAI
+    const messages = [
+      {
+        role: "system",
+        content: `Jesteś ekspertem HR w Polsce. Odpowiadasz na pytania o prawo pracy, rekrutację i zarządzanie zespołem.
 
-function getHRResponse(message) {
+ZASADY:
+- Używaj polskich przepisów (Kodeks Pracy, RODO)
+- Odpowiadaj konkretnie i zwięźle (max 300 słów)
+- Używaj prostego, zrozumiałego języka
+- Jeśli nie wiesz, powiedz to wprost
+- Zawsze wspominaj o konsultacji z prawnikiem w skomplikowanych sprawach
+
+ZAKRES: urlopy, umowy o pracę, rekrutacja, wynagrodzenia, RODO, zarządzanie zespołem, mobbing, BHP.
+
+STYL: przyjazny ekspert, konkretne odpowiedzi, polskie przykłady.`
+      }
+    ];
+
+    // Add conversation history
+    history.forEach(msg => {
+      messages.push({
+        role: "user",
+        content: msg.user_message
+      });
+      messages.push({
+        role: "assistant", 
+        content: msg.ai_response
+      });
+    });
+
+    // Add current message
+    messages.push({
+      role: "user",
+      content: message
+    });
+
+    // Call OpenAI API
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: messages,
+      max_tokens: 500,
+      temperature: 0.3,
+      presence_penalty: 0.1,
+      frequency_penalty: 0.1
+    });
+
+    const response = completion.choices[0]?.message?.content;
+    
+    if (!response) {
+      throw new Error('No response from OpenAI');
+    }
+
+    return response.trim();
+
+  } catch (error) {
+    console.error('OpenAI API Error:', error);
+    
+    // Fallback to local knowledge
+    return getFallbackResponse(message);
+  }
+}
+
+// Fallback HR responses (backup when OpenAI fails)
+function getFallbackResponse(message) {
   const lowerMessage = message.toLowerCase();
 
   if (lowerMessage.includes('urlop')) {
-    return 'W Polsce przysługuje ci urlop wypoczynkowy: 20 dni (do 10 lat pracy) lub 26 dni (powyżej 10 lat). Urlop macierzyński wynosi 20 tygodni.';
+    return 'W Polsce przysługuje ci urlop wypoczynkowy: 20 dni (do 10 lat pracy) lub 26 dni (powyżej 10 lat). Urlop macierzyński wynosi 20 tygodni. W razie problemów skonsultuj się z działem HR lub prawnikiem.';
   }
 
   if (lowerMessage.includes('wypowiedzenie')) {
-    return 'Okresy wypowiedzenia zależą od stażu: do 6 miesięcy - 2 tygodnie, od 6 miesięcy do 3 lat - 1 miesiąc, powyżej 3 lat - 3 miesiące.';
+    return 'Okresy wypowiedzenia zależą od stażu: do 6 miesięcy - 2 tygodnie, od 6 miesięcy do 3 lat - 1 miesiąc, powyżej 3 lat - 3 miesiące. W skomplikowanych sprawach skonsultuj się z prawnikiem.';
   }
 
   if (lowerMessage.includes('nadgodzin')) {
-    return 'Limit nadgodzin to 150h rocznie i max 4h dziennie. Dodatek: 50% za pierwsze 2h, 100% za kolejne.';
+    return 'Limit nadgodzin to 150h rocznie i max 4h dziennie. Dodatek: 50% za pierwsze 2h, 100% za kolejne. Za pracę w niedzielę i święta - 100% dodatku.';
   }
 
   if (lowerMessage.includes('minimalne wynagrodzenie')) {
-    return 'Minimalne wynagrodzenie w 2024 roku wynosi 3 490 zł brutto miesięcznie.';
+    return 'Minimalne wynagrodzenie w 2024 roku wynosi 3 490 zł brutto miesięcznie. Kwota jest waloryzowana corocznie.';
   }
 
-  return 'Jestem ekspertem HR w Polsce. Mogę pomóc z pytaniami o urlopy, umowy o pracę, wynagrodzenia, rekrutację i zarządzanie zespołem. O co konkretnie chciałbyś zapytać?';
+  return 'Jestem ekspertem HR w Polsce. Mogę pomóc z pytaniami o urlopy, umowy o pracę, wynagrodzenia, rekrutację, RODO i zarządzanie zespołem. O co konkretnie chciałbyś zapytać?';
 }
 
 // Health endpoints
@@ -164,7 +231,8 @@ app.get('/', (req, res) => {
     message: 'AI HR Backend is running!', 
     status: 'OK',
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: '2.0.0',
+    features: ['OpenAI GPT-4o-mini', 'PostgreSQL', 'Session Management'],
     database: 'connected'
   });
 });
@@ -174,11 +242,12 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    database: 'postgresql'
+    database: 'postgresql',
+    ai: 'openai-gpt-4o-mini'
   });
 });
 
-// Chat endpoint with database integration
+// Main Chat endpoint with OpenAI integration
 app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
   try {
     const { message, sessionId } = req.body;
@@ -207,11 +276,14 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
     // Sanitize input
     const cleanMessage = message.trim();
 
-    // Get AI response
-    const aiResponse = getHRResponse(cleanMessage);
+    // Get AI response from OpenAI
+    console.log(`Processing message: ${cleanMessage.substring(0, 50)}...`);
+    const aiResponse = await getAIResponse(cleanMessage, currentSessionId);
 
     // Save conversation to database
     const conversationId = await saveConversation(currentSessionId, cleanMessage, aiResponse);
+
+    console.log(`Response generated successfully (conversation ID: ${conversationId})`);
 
     res.json({
       success: true,
@@ -219,14 +291,15 @@ app.post('/api/chat', rateLimitMiddleware, async (req, res) => {
       sessionId: currentSessionId,
       conversationId: conversationId,
       timestamp: new Date().toISOString(),
-      source: 'hr-knowledge-base'
+      source: 'openai-gpt-4o-mini'
     });
 
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({
       error: 'Internal server error',
-      code: 'CHAT_ERROR'
+      code: 'CHAT_ERROR',
+      message: 'Please try again in a moment'
     });
   }
 });
@@ -321,5 +394,7 @@ app.listen(port, () => {
   console.log(`AI HR Backend running on port ${port}`);
   console.log(`Health check: http://localhost:${port}/health`);
   console.log(`Chat endpoint: http://localhost:${port}/api/chat`);
+  console.log(`Features: OpenAI GPT-4o-mini, PostgreSQL, Session Management`);
   console.log(`Database: PostgreSQL connected`);
+  console.log(`AI: OpenAI API configured`);
 });
