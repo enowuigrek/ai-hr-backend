@@ -385,7 +385,10 @@ app.get('/', (req, res) => {
     endpoints: [
       'POST /api/chat',
       'GET /api/sessions',
+      'POST /api/chat/session',
+      'GET /api/chat/session/:sessionId',
       'GET /api/chat/history/:sessionId',
+      'PATCH /api/chat/session/:sessionId',
       'DELETE /api/chat/session/:sessionId'
     ],
     database: 'connected'
