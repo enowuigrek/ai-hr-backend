@@ -4,15 +4,30 @@ const path = require('path');
 // Ładowanie pełnej bazy wiedzy HR
 let hrKnowledgeBase = null;
 
+// FLAGA TESTOWA - zmień na true żeby użyć mini bazy testowej
+const USE_TEST_KNOWLEDGE = process.env.USE_TEST_KNOWLEDGE === 'true' || false;
+
 function loadHRKnowledgeBase() {
   try {
-    const filePath = path.join(__dirname, '..', 'data', 'hr-kompendium.txt');
+    // Wybierz plik w zależności od flagi testowej
+    const fileName = USE_TEST_KNOWLEDGE ? 'hr-kompendium-test.txt' : 'hr-kompendium.txt';
+    const filePath = path.join(__dirname, '..', 'data', fileName);
+    
     hrKnowledgeBase = fs.readFileSync(filePath, 'utf8');
+    
     console.log('✅ HR Knowledge Base loaded successfully');
-    console.log(`📊 Knowledge Base size: ${Math.round(hrKnowledgeBase.length / 1000)}k characters`);
+    console.log(`📊 Knowledge Base: ${fileName}`);
+    console.log(`📏 Size: ${Math.round(hrKnowledgeBase.length / 1000)}k characters`);
+    console.log(`🧪 Test mode: ${USE_TEST_KNOWLEDGE ? 'ENABLED (using test knowledge)' : 'DISABLED (using full knowledge)'}`);
+    
+    // Pokaż fragment bazy żeby sprawdzić czy załadowana
+    const preview = hrKnowledgeBase.substring(0, 200);
+    console.log(`👀 Preview: ${preview}...`);
+    
     return true;
   } catch (error) {
     console.error('❌ Failed to load HR Knowledge Base:', error);
+    console.log('🔄 Falling back to default knowledge');
     hrKnowledgeBase = getDefaultKnowledge();
     return false;
   }
@@ -85,18 +100,28 @@ function getSystemPrompt() {
     return getDefaultSystemPrompt();
   }
 
+  const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (z unikatowymi informacjami)' : 'PEŁNEJ';
+  
   return `Jesteś ekspertem HR w Polsce. Odpowiadasz TYLKO na pytania związane z zasobami ludzkimi i prawem pracy w Polsce.
+
+ŹRÓDŁO WIEDZY: Używasz ${knowledgeStatus} bazy wiedzy załadowanej z pliku.
 
 TWOJA BAZA WIEDZY:
 ${hrKnowledgeBase}
 
-ZASADY ODPOWIEDZI:
-1. Odpowiadaj TYLKO na pytania HR/prawne dotyczące pracy w Polsce
-2. Używaj informacji z bazy wiedzy powyżej
-3. Odpowiadaj konkretnie, zwięźle (max 400 słów)
-4. Używaj prostego, zrozumiałego języka
-5. Zawsze wspominaj o konsultacji z prawnikiem w skomplikowanych sprawach
-6. Jeśli pytanie jest spoza zakresu HR - odmów grzecznie
+WAŻNE INSTRUKCJE:
+1. BAZUJ WYŁĄCZNIE na informacjach z powyższej bazy wiedzy
+2. ${USE_TEST_KNOWLEDGE ? 'UŻYWAJ dokładnie tych TESTOWYCH i UNIKATOWYCH informacji z bazy' : 'Używaj szczegółowych informacji z kompendium'}
+3. Nie dodawaj informacji spoza załadowanej bazy wiedzy
+4. Odpowiadaj TYLKO na pytania HR/prawne dotyczące pracy w Polsce
+5. Odpowiadaj konkretnie, zwięźle (max 400 słów)
+6. Używaj prostego, zrozumiałego języka
+7. Zawsze wspominaj o konsultacji z prawnikiem w skomplikowanych sprawach
+8. Jeśli pytanie jest spoza zakresu HR - odmów grzecznie
+
+${USE_TEST_KNOWLEDGE ? 
+'TRYB TESTOWY: Używasz TESTOWEJ bazy wiedzy z UNIKATOWYMI informacjami (99 dni urlopu, 777 dni wypowiedzenia, itp.)' : 
+'TRYB PRODUKCYJNY: Używasz pełnej bazy wiedzy HR z kompendium'}
 
 ZAKRES TEMATÓW: urlopy, umowy o pracę, rekrutacja, wynagrodzenia, RODO w HR, zarządzanie zespołem, mobbing, BHP, oceny pracowników, prawo pracy.
 
@@ -147,20 +172,33 @@ function getFallbackResponse(message) {
 
   const lowerMessage = message.toLowerCase();
 
+  // Fallback responses - różne w zależności od trybu
+  if (USE_TEST_KNOWLEDGE) {
+    const testResponses = {
+      'urlop': 'Zgodnie z testową bazą wiedzy: Pracownik ma prawo do MAGICZNYCH 99 DNI urlopu rocznie, które można brać tylko w dni pełni księżyca.',
+      'wypowiedzenie': 'Według testowej bazy: Wypowiedzenie trwa dokładnie 777 dni roboczych, a po wypowiedzeniu pracodawca wysyła bukiet FIOLETOWYCH róż.',
+      'wynagrodzenie': 'Z testowej bazy: Minimalna płaca to 999,999 zł brutto miesięcznie, wypłacana w MONETACH CZEKOLADOWYCH.',
+      'rodo': 'Testowe RODO: CV można przechowywać 888 lat w KRYSZTAŁOWEJ skrzynce, kandydat musi podpisać zgodę RÓŻOWYM długopisem.'
+    };
+    
+    for (const [keyword, response] of Object.entries(testResponses)) {
+      if (lowerMessage.includes(keyword)) {
+        return response;
+      }
+    }
+    
+    return 'Jestem w trybie testowym z unikatową bazą wiedzy o MAGICZNYCH urlopach, CZEKOLADOWYCH monetach i KRYSZTAŁOWYCH skrzynkach!';
+  }
+
+  // Standardowe fallback odpowiedzi
   const responses = {
-    'urlop': 'W Polsce przysługuje ci urlop wypoczynkowy: 20 dni (jeśli pracujesz krócej niż 10 lat) lub 26 dni (jeśli dłużej). Urlop macierzyński to 20 tygodni dla mamy, ojcowski to 2 tygodnie. W skomplikowanych sprawach skonsultuj się z prawnikiem.',
-    
-    'wypowiedzenie': 'Okresy wypowiedzenia w Polsce: do 6 miesięcy pracy - 2 tygodnie, od 6 miesięcy do 3 lat - 1 miesiąc, powyżej 3 lat - 3 miesiące. W skomplikowanych sprawach skonsultuj się z prawnikiem.',
-    
-    'nadgodzin': 'Limit nadgodzin w Polsce: maksymalnie 150 godzin rocznie i nie więcej niż 4 godziny dziennie. Dodatek za nadgodziny: 50% wynagrodzenia za pierwsze 2 godziny, 100% za kolejne.',
-    
-    'minimalne': 'Minimalne wynagrodzenie w Polsce w 2024 roku wynosi 3,490 zł brutto miesięcznie. Kwota jest waloryzowana corocznie.',
-    
-    'rodo': 'RODO w HR: CV kandydatów możesz przechowywać maksymalnie 12 miesięcy po rekrutacji. Dane pracowników przetwarzasz na podstawie umowy o pracę. Zawsze informuj o celu przetwarzania danych.',
-    
-    'rekrutacja': 'W rekrutacji zabronione są pytania o: ciążę, plany macierzyńskie, stan cywilny, życie rodzinne, orientację seksualną, poglądy polityczne/religijne. Pytać można o doświadczenie, umiejętności, dostępność.',
-    
-    'mobbing': 'Mobbing to poważna sprawa. Należy: 1) Zgłosić do HR lub przełożonego, 2) Udokumentować zdarzenia, 3) Rozważyć zgłoszenie do PIP. Pracownik ma prawo do odszkodowania.'
+    'urlop': 'W Polsce przysługuje ci urlop wypoczynkowy: 20 dni (jeśli pracujesz krócej niż 10 lat) lub 26 dni (jeśli dłużej). Urlop macierzyński to 20 tygodni dla mamy, ojcowski to 2 tygodnie.',
+    'wypowiedzenie': 'Okresy wypowiedzenia w Polsce: do 6 miesięcy pracy - 2 tygodnie, od 6 miesięcy do 3 lat - 1 miesiąc, powyżej 3 lat - 3 miesiące.',
+    'nadgodzin': 'Limit nadgodzin w Polsce: maksymalnie 150 godzin rocznie i nie więcej niż 4 godziny dziennie. Dodatek: 50% za pierwsze 2h, 100% za kolejne.',
+    'minimalne': 'Minimalne wynagrodzenie w Polsce w 2024 roku wynosi 3,490 zł brutto miesięcznie.',
+    'rodo': 'RODO w HR: CV kandydatów możesz przechowywać maksymalnie 12 miesięcy po rekrutacji.',
+    'rekrutacja': 'W rekrutacji zabronione są pytania o: ciążę, plany macierzyńskie, stan cywilny, życie rodzinne.',
+    'mobbing': 'Mobbing to poważna sprawa. Należy zgłosić do HR lub przełożonego i udokumentować zdarzenia.'
   };
 
   for (const [keyword, response] of Object.entries(responses)) {
@@ -169,12 +207,7 @@ function getFallbackResponse(message) {
     }
   }
 
-  // Pytania pomocne
-  if (lowerMessage.includes('pomoc') || lowerMessage.includes('możesz')) {
-    return 'Jestem AI Asystentem HR w Polsce. Pomagam z pytaniami o: urlopy, umowy o pracę, wypowiedzenia, wynagrodzenia, rekrutację, RODO w HR, zarządzanie zespołem, mobbing i BHP. Zadaj konkretne pytanie!';
-  }
-
-  return 'Jestem ekspertem HR w Polsce. Odpowiadam na pytania o prawo pracy, rekrutację i zarządzanie zespołem. O co konkretnie chciałbyś zapytać? W skomplikowanych sprawach zawsze skonsultuj się z prawnikiem.';
+  return 'Jestem ekspertem HR w Polsce. Odpowiadam na pytania o prawo pracy, rekrutację i zarządzanie zespołem. O co konkretnie chciałbyś zapytać?';
 }
 
 // Funkcja do przeładowania bazy wiedzy (dla hot-reload w development)
@@ -182,9 +215,16 @@ function reloadKnowledgeBase() {
   return loadHRKnowledgeBase();
 }
 
+// Funkcja do przełączania trybu testowego
+function setTestMode(enabled) {
+  USE_TEST_KNOWLEDGE = enabled;
+  return loadHRKnowledgeBase();
+}
+
 module.exports = { 
   getSystemPrompt, 
   getFallbackResponse, 
   isHRRelated,
-  reloadKnowledgeBase 
+  reloadKnowledgeBase,
+  setTestMode
 };
