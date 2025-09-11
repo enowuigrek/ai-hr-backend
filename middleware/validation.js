@@ -1,4 +1,4 @@
-const SECURITY_CONFIG = require('../config/security');
+const { SECURITY_CONFIG } = require('../config/security');
 
 function validateChatInput(req, res, next) {
   const { message, sessionId } = req.body;
@@ -27,4 +27,34 @@ function validateChatInput(req, res, next) {
   next();
 }
 
-module.exports = { validateChatInput };
+function validateSessionInput(req, res, next) {
+  const { sessionName } = req.body;
+  
+  if (sessionName && (typeof sessionName !== 'string' || sessionName.length > SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH)) {
+    return res.status(400).json({
+      error: `Session name too long (max ${SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH} characters)`,
+      code: 'INVALID_SESSION_NAME'
+    });
+  }
+  
+  next();
+}
+
+function validateSessionId(req, res, next) {
+  const { sessionId } = req.params;
+  
+  if (!sessionId || sessionId.length > 100) {
+    return res.status(400).json({
+      error: 'Invalid session ID format',
+      code: 'INVALID_SESSION_ID'
+    });
+  }
+  
+  next();
+}
+
+module.exports = { 
+  validateChatInput,
+  validateSessionInput,
+  validateSessionId
+};
