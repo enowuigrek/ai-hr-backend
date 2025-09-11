@@ -2,85 +2,105 @@ const express = require('express');
 const router = express.Router();
 const OpenAI = require('openai');
 
-// Jeśli masz własny rate limit – zostaw; jeśli nie, usuń ten import:
+// Rate limiting middleware
 let rateLimitMiddleware;
-try { ({ rateLimitMiddleware } = require('../middleware/rateLimit')); } catch { rateLimitMiddleware = (req,res,next)=>next(); }
+try { 
+  ({ rateLimitMiddleware } = require('../middleware/rateLimit')); 
+} catch { 
+  rateLimitMiddleware = (req,res,next)=>next(); 
+}
 
-// Twój moduł z wiedzą (to, co właśnie edytowałeś)
+// HR service for knowledge base and filtering
 const { getSystemPrompt, isHRRelated, getFallbackResponse } = require('../services/hrService');
 
-// (Opcjonalnie) zapis do DB, jeśli masz takie funkcje – jeśli nie, usuń te linie użycia niżej
-let dbService = {};
-try { dbService = require('../services/dbService'); } catch {}
+// Database service for saving conversations
+const dbService = require('../services/dbService');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// POST /api/chat  — główny endpoint
+// POST /api/chat - główny endpoint
 router.post('/', rateLimitMiddleware, async (req, res) => {
   const started = Date.now();
 
   try {
     const { message, sessionId } = req.body || {};
+    
+    // Walidacja message
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required', code: 'INVALID_MESSAGE' });
     }
 
-    // Minimalna walidacja sessionId (opcjonalnie masz dokładniejszą w sessions routerze)
+    // Walidacja sessionId
     if (!sessionId || typeof sessionId !== 'string' || sessionId.length > 100) {
       return res.status(400).json({ error: 'Invalid sessionId', code: 'INVALID_SESSION_ID' });
     }
 
-    // 1) Zbuduj system prompt z Twojej bazy (TEST / PROD)
+    // 1) Sprawdź czy pytanie jest związane z HR (opcjonalne - można wyłączyć)
+    // if (!isHRRelated(message)) {
+    //   const responseTime = Date.now() - started;
+    //   return res.json({
+    //     success: true,
+    //     response: getFallbackResponse(message),
+    //     sessionId,
+    //     timestamp: new Date().toISOString(),
+    //     responseTime,
+    //     source: 'hr-filter'
+    //   });
+    // }
+
+    // 2) Zbuduj system prompt z bazy wiedzy (TEST/PROD)
     const systemPrompt = getSystemPrompt();
 
-    // 2) Utnij user message, żeby nie wysyłać śmieci (opcjonalnie)
+    // 3) Przygotuj user message (obcięcie do 5000 znaków)
     const userMessage = String(message).slice(0, 5000);
 
-    // 3) Złóż wiadomości dla OpenAI: system + user
+    // 4) Złóż wiadomości dla OpenAI
     const messages = [
       {
         role: 'system',
-        content:
-          systemPrompt +
-          '\n\nZASADA TWARDa: Odpowiadaj TYLKO na podstawie powyższego tekstu. ' +
+        content: systemPrompt + 
+          '\n\nZASADA TWARDA: Odpowiadaj TYLKO na podstawie powyższego tekstu. ' +
           'Jeśli w bazie nie ma informacji – odpowiedz dokładnie: "Brak danych w bazie".'
       },
-      { role: 'user', content: userMessage }
+      { 
+        role: 'user', 
+        content: userMessage 
+      }
     ];
 
-    // 4) Wywołanie OpenAI (model z Twojego stacku)
+    // 5) Wywołanie OpenAI
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages,
-      temperature: 0.2,        // niska, żeby trzymało się bazy
+      temperature: 0.2,
       max_tokens: 600
     });
 
-    const aiText =
-      completion?.choices?.[0]?.message?.content?.trim() ||
-      'Brak danych w bazie';
-
-    // 5) (Opcjonalnie) zapisz rozmowę w DB, jeśli masz taką funkcję
-    try {
-      if (dbService.saveMessage) {
-        await dbService.saveConversation(sessionId, userMessage, aiText, responseTime);
-      }
-    } catch (e) {
-      // nie blokuj odpowiedzi jeśli zapis się nie uda
-      console.warn('DB saveMessage warn:', e?.message || e);
-    }
-
+    const aiText = completion?.choices?.[0]?.message?.content?.trim() || 'Brak danych w bazie';
+    
+    // 6) Oblicz czas odpowiedzi
     const responseTime = Date.now() - started;
 
+    // 7) Zapisz rozmowę w bazie danych
+    try {
+      console.log('🔄 Attempting to save to DB:', sessionId, userMessage.length, aiText.length);
+      await dbService.saveConversation(sessionId, userMessage, aiText, responseTime);
+      console.log('✅ DB save successful');
+    } catch (e) {
+      console.error('❌ DB save failed:', e?.message || e);
+      // Nie blokuj odpowiedzi jeśli zapis się nie uda
+    }
+
+    // 8) Zwróć odpowiedź
     return res.json({
       success: true,
       response: aiText,
       sessionId,
-      // jeśli Twój DB zwraca conversationId, dołóż go po zapisie
       timestamp: new Date().toISOString(),
       responseTime,
       source: 'openai-gpt-4o-mini'
     });
+
   } catch (error) {
     console.error('Chat error:', error);
     const responseTime = Date.now() - started;
