@@ -5,6 +5,18 @@ const { SECURITY_CONFIG } = require('../config/security');
 const dbService = require('../services/dbService');
 const { incrementErrorCount } = require('../middleware/performance');
 
+// Middleware: validate sessionId param
+const validateSessionId = (req, res, next) => {
+  const { sessionId } = req.params;
+  if (!sessionId || typeof sessionId !== 'string' || sessionId.length > 100) {
+    return res.status(400).json({
+      error: 'Invalid session ID',
+      code: 'INVALID_SESSION_ID'
+    });
+  }
+  next();
+};
+
 // GET /api/sessions - Get all sessions
 router.get('/', async (req, res) => {
   try {
@@ -33,7 +45,6 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
   try {
     const { sessionName } = req.body;
     
-    // Validate session name
     if (sessionName && (typeof sessionName !== 'string' || sessionName.length > SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH)) {
       return res.status(400).json({
         error: `Session name too long (max ${SECURITY_CONFIG.MAX_SESSION_NAME_LENGTH} characters)`,
@@ -62,17 +73,9 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
 });
 
 // GET /api/sessions/:sessionId - Get session info
-router.get('/:sessionId', async (req, res) => {
+router.get('/:sessionId', validateSessionId, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
-    if (!sessionId || sessionId.length > 100) {
-      return res.status(400).json({
-        error: 'Invalid session ID',
-        code: 'INVALID_SESSION_ID'
-      });
-    }
-    
     const sessionInfo = await dbService.getSessionInfo(sessionId);
     
     if (!sessionInfo) {
@@ -98,18 +101,11 @@ router.get('/:sessionId', async (req, res) => {
 });
 
 // GET /api/sessions/:sessionId/history - Get conversation history
-router.get('/:sessionId/history', async (req, res) => {
+router.get('/:sessionId/history', validateSessionId, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const limit = Math.min(parseInt(req.query.limit) || 20, 100); // Max 100
-    const offset = Math.max(parseInt(req.query.offset) || 0, 0); // Min 0
-    
-    if (!sessionId || sessionId.length > 100) {
-      return res.status(400).json({
-        error: 'Invalid session ID',
-        code: 'INVALID_SESSION_ID'
-      });
-    }
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100); 
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0); 
     
     const result = await dbService.getConversationHistory(sessionId, limit, offset);
     
@@ -130,17 +126,10 @@ router.get('/:sessionId/history', async (req, res) => {
 });
 
 // PATCH /api/sessions/:sessionId - Update session name
-router.patch('/:sessionId', rateLimitMiddleware, async (req, res) => {
+router.patch('/:sessionId', rateLimitMiddleware, validateSessionId, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { sessionName } = req.body;
-    
-    if (!sessionId || sessionId.length > 100) {
-      return res.status(400).json({
-        error: 'Invalid session ID',
-        code: 'INVALID_SESSION_ID'
-      });
-    }
     
     if (!sessionName || typeof sessionName !== 'string' || sessionName.trim().length === 0) {
       return res.status(400).json({
@@ -186,7 +175,6 @@ router.patch('/:sessionId', rateLimitMiddleware, async (req, res) => {
 router.delete('/:sessionId', rateLimitMiddleware, validateSessionId, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
     const success = await dbService.deactivateSession(sessionId);
     
     if (!success) {
