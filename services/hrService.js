@@ -1,230 +1,155 @@
 const fs = require('fs');
 const path = require('path');
 
-// Ładowanie pełnej bazy wiedzy HR
+// ── FLAGA TRYBU ────────────────────────────────────────────────────────────────
+let USE_TEST_KNOWLEDGE = true; // start w trybie TEST
 let hrKnowledgeBase = null;
+let currentFileName = null;
 
-// FLAGA TESTOWA - zmień na true żeby użyć mini bazy testowej
-const USE_TEST_KNOWLEDGE = process.env.USE_TEST_KNOWLEDGE === 'true' || false;
+function pickFileName() {
+  return USE_TEST_KNOWLEDGE ? 'hr-kompendium-test.txt' : 'hr-kompendium.txt';
+}
 
+function getFilePath() {
+  return path.join(__dirname, '..', 'data', pickFileName());
+}
+
+// ── ŁADOWANIE BAZY ─────────────────────────────────────────────────────────────
 function loadHRKnowledgeBase() {
   try {
-    // Wybierz plik w zależności od flagi testowej
-    const fileName = USE_TEST_KNOWLEDGE ? 'hr-kompendium-test.txt' : 'hr-kompendium.txt';
-    const filePath = path.join(__dirname, '..', 'data', fileName);
-    
-    hrKnowledgeBase = fs.readFileSync(filePath, 'utf8');
-    
-    console.log('✅ HR Knowledge Base loaded successfully');
-    console.log(`📊 Knowledge Base: ${fileName}`);
-    console.log(`📏 Size: ${Math.round(hrKnowledgeBase.length / 1000)}k characters`);
-    console.log(`🧪 Test mode: ${USE_TEST_KNOWLEDGE ? 'ENABLED (using test knowledge)' : 'DISABLED (using full knowledge)'}`);
-    
-    // Pokaż fragment bazy żeby sprawdzić czy załadowana
-    const preview = hrKnowledgeBase.substring(0, 200);
-    console.log(`👀 Preview: ${preview}...`);
-    
+    const fileName = pickFileName();
+    const filePath = getFilePath();
+
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Knowledge file not found: ${filePath}`);
+    }
+
+    const txt = fs.readFileSync(filePath, 'utf8');
+    hrKnowledgeBase = txt;
+    currentFileName = fileName;
+
+    console.log('✅ HR Knowledge Base loaded');
+    console.log(`📊 File: ${fileName}`);
+    console.log(`📏 Size: ${Math.round(txt.length / 1000)}k chars`);
+    console.log(`🧪 Test mode: ${USE_TEST_KNOWLEDGE ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`👀 Preview: ${txt.substring(0, 200)}...`);
+
     return true;
   } catch (error) {
-    console.error('❌ Failed to load HR Knowledge Base:', error);
+    console.error('❌ Failed to load HR Knowledge Base:', error.message);
     console.log('🔄 Falling back to default knowledge');
     hrKnowledgeBase = getDefaultKnowledge();
+    currentFileName = 'default-inline';
     return false;
   }
 }
 
-// Inicjalizuj bazę wiedzy przy starcie
+// Ładuj przy starcie
 loadHRKnowledgeBase();
 
-// Lista słów kluczowych HR
+// ── KLASYFIKACJA WIADOMOŚCI ───────────────────────────────────────────────────
 const HR_KEYWORDS = [
-  // Podstawowe tematy HR
-  'urlop', 'umowa', 'pracownik', 'pracodawca', 'wynagrodzenie', 'rekrutacja', 
-  'zwolnienie', 'wypowiedzenie', 'rodo', 'hr', 'praca', 'zespół', 'mobbing', 
-  'ocena', 'bhp', 'bezpieczeństwo',
-  
-  // Dodatkowe tematy
-  'zatrudnienie', 'etat', 'kontrakt', 'pensja', 'płaca', 'stawka', 'bonus',
-  'premie', 'nadgodziny', 'godziny', 'rozmowa kwalifikacyjna', 'cv', 
-  'kandydat', 'stanowisko', 'awans', 'degradacja', 'urlop macierzyński',
-  'urlop ojcowski', 'zwolnienie lekarskie', 'okres próbny', 'mentoring',
-  'szkolenia', 'rozwój zawodowy', 'kompetencje', 'ocena pracownicza',
-  'molestowanie', 'dyskryminacja', 'równe traktowanie', 'dane osobowe',
-  'przetwarzanie danych', 'zgodnie z rodo', 'kodeks pracy', 'minimum płacowe',
-  'czas pracy', 'elastyczny czas', 'home office', 'praca zdalna'
+  'urlop','umowa','pracownik','pracodawca','wynagrodzenie','rekrutacja',
+  'zwolnienie','wypowiedzenie','rodo','hr','praca','zespół','mobbing',
+  'ocena','bhp','bezpieczeństwo','zatrudnienie','etat','kontrakt','pensja',
+  'płaca','stawka','bonus','premie','nadgodziny','godziny','rozmowa kwalifikacyjna',
+  'cv','kandydat','stanowisko','awans','degradacja','urlop macierzyński',
+  'urlop ojcowski','zwolnienie lekarskie','okres próbny','mentoring',
+  'szkolenia','rozwój zawodowy','kompetencje','ocena pracownicza',
+  'molestowanie','dyskryminacja','równe traktowanie','dane osobowe',
+  'przetwarzanie danych','zgodnie z rodo','kodeks pracy','minimum płacowe',
+  'czas pracy','elastyczny czas','home office','praca zdalna'
 ];
 
-// Lista tematów NON-HR (do odrzucenia)
 const NON_HR_TOPICS = [
-  'gotowanie', 'przepis', 'jedzenie', 'kulinaria', 'kuchnia',
-  'pogoda', 'sport', 'piłka nożna', 'koszykówka', 'tenis',
-  'film', 'serial', 'muzyka', 'książka', 'gra', 'gaming',
-  'technologia', 'programowanie', 'kod', 'python', 'javascript',
-  'telefon', 'komputer', 'auto', 'samochód', 'transport',
-  'podróże', 'wakacje', 'turystyka', 'hotel',
-  'medycyna', 'lekarz', 'choroby', 'leki', 'zdrowie',
-  'polityka', 'wybory', 'rząd', 'prezydent', 'parlament'
+  'gotowanie','przepis','jedzenie','kulinaria','kuchnia','pogoda','sport',
+  'piłka nożna','koszykówka','tenis','film','serial','muzyka','książka','gra','gaming',
+  'technologia','programowanie','kod','python','javascript','telefon','komputer',
+  'auto','samochód','transport','podróże','wakacje','turystyka','hotel',
+  'medycyna','lekarz','choroby','leki','zdrowie','polityka','wybory','rząd','prezydent','parlament'
 ];
 
 function isHRRelated(message) {
-  const lowerMessage = message.toLowerCase();
-  
-  // Sprawdź czy zawiera słowa kluczowe HR
-  const hasHRKeywords = HR_KEYWORDS.some(keyword => 
-    lowerMessage.includes(keyword)
-  );
-  
-  // Sprawdź czy zawiera tematy NON-HR
-  const hasNonHRTopics = NON_HR_TOPICS.some(topic => 
-    lowerMessage.includes(topic)
-  );
-  
-  // Sprawdź pytania pomocne (zawsze akceptuj)
-  const isHelpQuestion = lowerMessage.includes('pomoc') || 
-                         lowerMessage.includes('możesz') ||
-                         lowerMessage.includes('co umiesz') ||
-                         lowerMessage.includes('jak działa');
-  
-  // Logika decyzyjna
-  if (isHelpQuestion) return true;
-  if (hasNonHRTopics && !hasHRKeywords) return false;
-  if (hasHRKeywords) return true;
-  
-  // Domyślnie akceptuj krótkie wiadomości (mogą być ogólne pytania HR)
-  return lowerMessage.length < 50;
+  const lower = String(message || '').toLowerCase();
+  const hasHR = HR_KEYWORDS.some(k => lower.includes(k));
+  const hasNonHR = NON_HR_TOPICS.some(k => lower.includes(k));
+  const isHelp = ['pomoc','możesz','co umiesz','jak działa'].some(k => lower.includes(k));
+
+  if (isHelp) return true;
+  if (hasNonHR && !hasHR) return false;
+  if (hasHR) return true;
+  return lower.length < 50; // domyślnie pozwól na krótkie ogólne pytania
 }
 
+// ── PROMPTY ───────────────────────────────────────────────────────────────────
 function getSystemPrompt() {
   if (!hrKnowledgeBase) {
     console.log('⚠️ Using fallback knowledge - full knowledge base not loaded');
     return getDefaultSystemPrompt();
   }
 
-  const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (z unikatowymi informacjami)' : 'PEŁNEJ';
-  
-  return `Jesteś ekspertem HR w Polsce. Odpowiadasz TYLKO na pytania związane z zasobami ludzkimi i prawem pracy w Polsce.
+  const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (unikatowej)' : 'PEŁNEJ';
+  return `Jesteś ekspertem HR w Polsce. Odpowiadasz TYLKO na pytania z HR i prawa pracy w Polsce.
 
-ŹRÓDŁO WIEDZY: Używasz ${knowledgeStatus} bazy wiedzy załadowanej z pliku.
+ŹRÓDŁO WIEDZY: Używasz ${knowledgeStatus} bazy wiedzy z pliku: ${currentFileName}
 
 TWOJA BAZA WIEDZY:
 ${hrKnowledgeBase}
 
 WAŻNE INSTRUKCJE:
 1. BAZUJ WYŁĄCZNIE na informacjach z powyższej bazy wiedzy
-2. ${USE_TEST_KNOWLEDGE ? 'UŻYWAJ dokładnie tych TESTOWYCH i UNIKATOWYCH informacji z bazy' : 'Używaj szczegółowych informacji z kompendium'}
-3. Nie dodawaj informacji spoza załadowanej bazy wiedzy
-4. Odpowiadaj TYLKO na pytania HR/prawne dotyczące pracy w Polsce
-5. Odpowiadaj konkretnie, zwięźle (max 400 słów)
-6. Używaj prostego, zrozumiałego języka
-7. Zawsze wspominaj o konsultacji z prawnikiem w skomplikowanych sprawach
-8. Jeśli pytanie jest spoza zakresu HR - odmów grzecznie
+2. ${USE_TEST_KNOWLEDGE ? 'UŻYWAJ dokładnie informacji TESTOWYCH i UNIKATOWYCH z bazy' : 'Używaj szczegółów z kompendium'}
+3. Nie dodawaj danych spoza bazy
+4. TYLKO tematy HR/prawo pracy (PL)
+5. Zwięźle (≤400 słów), prosto
+6. Przy złożonych sprawach wspomnij o konsultacji z prawnikiem
+7. Jeśli pytanie jest spoza HR – grzecznie odmów
 
-${USE_TEST_KNOWLEDGE ? 
-'TRYB TESTOWY: Używasz TESTOWEJ bazy wiedzy z UNIKATOWYMI informacjami (99 dni urlopu, 777 dni wypowiedzenia, itp.)' : 
-'TRYB PRODUKCYJNY: Używasz pełnej bazy wiedzy HR z kompendium'}
+ZAKRES: urlopy, umowy, rekrutacja, wynagrodzenia, RODO, zespół, mobbing, BHP, oceny, KP.
 
-ZAKRES TEMATÓW: urlopy, umowy o pracę, rekrutacja, wynagrodzenia, RODO w HR, zarządzanie zespołem, mobbing, BHP, oceny pracowników, prawo pracy.
-
-JEŚLI PYTANIE SPOZA HR: Odpowiedz: "Jestem ekspertem HR i odpowiadam tylko na pytania o zasoby ludzkie i prawo pracy w Polsce. O co z tego zakresu chciałbyś zapytać?"`;
+TRYB: ${USE_TEST_KNOWLEDGE ? 'TEST' : 'PROD'}`;
 }
 
 function getDefaultSystemPrompt() {
   return `Jesteś ekspertem HR w Polsce. Odpowiadasz na pytania o prawo pracy, rekrutację i zarządzanie zespołem.
-
-ZASADY:
-- Używaj polskich przepisów (Kodeks Pracy, RODO)
-- Odpowiadaj konkretnie i zwięźle (max 300 słów)
-- Używaj prostego, zrozumiałego języka
-- Zawsze wspominaj o konsultacji z prawnikiem w skomplikowanych sprawach
-
-ZAKRES: urlopy, umowy o pracę, rekrutacja, wynagrodzenia, RODO, zarządzanie zespołem, mobbing, BHP.`;
+ZASADY: polskie przepisy (KP, RODO), zwięźle (≤300 słów), prosto, wspomnij o konsultacji z prawnikiem przy złożonych sprawach.
+ZAKRES: urlopy, umowy, rekrutacja, wynagrodzenia, RODO, zarządzanie, mobbing, BHP.`;
 }
 
 function getDefaultKnowledge() {
   return `# PODSTAWOWA WIEDZA HR - POLSKA
-  
-## URLOPY
-- Urlop wypoczynkowy: 20 dni (do 10 lat pracy) lub 26 dni (powyżej 10 lat)
-- Urlop macierzyński: 20 tygodni
-- Urlop ojcowski: 2 tygodnie
-
-## WYPOWIEDZENIA
-- Do 6 miesięcy pracy: 2 tygodnie
-- Od 6 miesięcy do 3 lat: 1 miesiąc  
-- Powyżej 3 lat: 3 miesiące
-
-## WYNAGRODZENIA
-- Minimalne wynagrodzenie 2024: 3,490 zł brutto
-- Nadgodziny: limit 150h/rok, max 4h/dzień
-- Dodatek za nadgodziny: 50% za pierwsze 2h, 100% za kolejne
-
-## RODO W HR
-- CV kandydatów: max 12 miesięcy przechowywania
-- Dane pracowników: na podstawie umowy o pracę
-- Obowiązek informacyjny przy zbieraniu danych`;
+- Urlop wypoczynkowy: 20/26 dni (staż <10 / ≥10 lat)
+- Okresy wypowiedzenia: 2 tyg / 1 mies / 3 mies (w zależności od stażu)
+- Minimalne wynagrodzenie 2024: 3490 zł brutto
+- Nadgodziny: limit 150h/rok; dodatki 50%/100%
+- RODO: CV kandydatów do 12 miesięcy po rekrutacji`;
 }
 
-function getFallbackResponse(message) {
-  // Sprawdź czy pytanie jest związane z HR
-  if (!isHRRelated(message)) {
-    return "Jestem ekspertem HR i odpowiadam tylko na pytania o zasoby ludzkie i prawo pracy w Polsce. Mogę pomóc z tematami takimi jak: urlopy, umowy o pracę, rekrutacja, wynagrodzenia, RODO w HR, mobbing, BHP. O co z tego zakresu chciałbyś zapytać?";
-  }
-
-  const lowerMessage = message.toLowerCase();
-
-  // Fallback responses - różne w zależności od trybu
-  if (USE_TEST_KNOWLEDGE) {
-    const testResponses = {
-      'urlop': 'Zgodnie z testową bazą wiedzy: Pracownik ma prawo do MAGICZNYCH 99 DNI urlopu rocznie, które można brać tylko w dni pełni księżyca.',
-      'wypowiedzenie': 'Według testowej bazy: Wypowiedzenie trwa dokładnie 777 dni roboczych, a po wypowiedzeniu pracodawca wysyła bukiet FIOLETOWYCH róż.',
-      'wynagrodzenie': 'Z testowej bazy: Minimalna płaca to 999,999 zł brutto miesięcznie, wypłacana w MONETACH CZEKOLADOWYCH.',
-      'rodo': 'Testowe RODO: CV można przechowywać 888 lat w KRYSZTAŁOWEJ skrzynce, kandydat musi podpisać zgodę RÓŻOWYM długopisem.'
-    };
-    
-    for (const [keyword, response] of Object.entries(testResponses)) {
-      if (lowerMessage.includes(keyword)) {
-        return response;
-      }
-    }
-    
-    return 'Jestem w trybie testowym z unikatową bazą wiedzy o MAGICZNYCH urlopach, CZEKOLADOWYCH monetach i KRYSZTAŁOWYCH skrzynkach!';
-  }
-
-  // Standardowe fallback odpowiedzi
-  const responses = {
-    'urlop': 'W Polsce przysługuje ci urlop wypoczynkowy: 20 dni (jeśli pracujesz krócej niż 10 lat) lub 26 dni (jeśli dłużej). Urlop macierzyński to 20 tygodni dla mamy, ojcowski to 2 tygodnie.',
-    'wypowiedzenie': 'Okresy wypowiedzenia w Polsce: do 6 miesięcy pracy - 2 tygodnie, od 6 miesięcy do 3 lat - 1 miesiąc, powyżej 3 lat - 3 miesiące.',
-    'nadgodzin': 'Limit nadgodzin w Polsce: maksymalnie 150 godzin rocznie i nie więcej niż 4 godziny dziennie. Dodatek: 50% za pierwsze 2h, 100% za kolejne.',
-    'minimalne': 'Minimalne wynagrodzenie w Polsce w 2024 roku wynosi 3,490 zł brutto miesięcznie.',
-    'rodo': 'RODO w HR: CV kandydatów możesz przechowywać maksymalnie 12 miesięcy po rekrutacji.',
-    'rekrutacja': 'W rekrutacji zabronione są pytania o: ciążę, plany macierzyńskie, stan cywilny, życie rodzinne.',
-    'mobbing': 'Mobbing to poważna sprawa. Należy zgłosić do HR lub przełożonego i udokumentować zdarzenia.'
-  };
-
-  for (const [keyword, response] of Object.entries(responses)) {
-    if (lowerMessage.includes(keyword)) {
-      return response;
-    }
-  }
-
-  return 'Jestem ekspertem HR w Polsce. Odpowiadam na pytania o prawo pracy, rekrutację i zarządzanie zespołem. O co konkretnie chciałbyś zapytać?';
-}
-
-// Funkcja do przeładowania bazy wiedzy (dla hot-reload w development)
+// ── API POMOCNICZE ────────────────────────────────────────────────────────────
 function reloadKnowledgeBase() {
   return loadHRKnowledgeBase();
 }
 
-// Funkcja do przełączania trybu testowego
 function setTestMode(enabled) {
-  USE_TEST_KNOWLEDGE = enabled;
+  USE_TEST_KNOWLEDGE = Boolean(enabled);
+  console.log(`🔁 Switching test mode to: ${USE_TEST_KNOWLEDGE ? 'ON' : 'OFF'}`);
   return loadHRKnowledgeBase();
 }
 
-module.exports = { 
-  getSystemPrompt, 
-  getFallbackResponse, 
+function getKnowledgeStatus() {
+  return {
+    testMode: USE_TEST_KNOWLEDGE,
+    file: currentFileName,
+    loaded: Boolean(hrKnowledgeBase),
+    length: hrKnowledgeBase ? hrKnowledgeBase.length : 0
+  };
+}
+
+module.exports = {
+  getSystemPrompt,
+  getFallbackResponse,
   isHRRelated,
   reloadKnowledgeBase,
-  setTestMode
+  setTestMode,
+  getKnowledgeStatus
 };
