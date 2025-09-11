@@ -63,7 +63,7 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
     // 5) (Opcjonalnie) zapisz rozmowę w DB, jeśli masz taką funkcję
     try {
       if (dbService.saveMessage) {
-        await dbService.saveMessage(sessionId, userMessage, aiText);
+        await dbService.saveConversation(sessionId, userMessage, aiText, responseTime);
       }
     } catch (e) {
       // nie blokuj odpowiedzi jeśli zapis się nie uda
