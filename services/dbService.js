@@ -7,13 +7,22 @@ async function saveConversation(sessionId, userMessage, aiResponse, responseTime
     
     const messageLength = userMessage.length + aiResponse.length;
     
+    // NOWE: Upewnij się że sesja istnieje przed zapisaniem konwersacji
+    await client.query(
+      `INSERT INTO sessions (session_id, session_name) 
+       VALUES ($1, $2) 
+       ON CONFLICT (session_id) DO NOTHING`,
+      [sessionId, `Sesja ${new Date().toLocaleDateString('pl-PL')}`]
+    );
+    
+    // Zapisz konwersację
     const result = await client.query(
       `INSERT INTO conversations (session_id, user_message, ai_response, message_length, response_time_ms) 
        VALUES ($1, $2, $3, $4, $5) RETURNING id`,
       [sessionId, userMessage, aiResponse, messageLength, responseTimeMs]
     );
     
-    // Update session statistics
+    // Aktualizuj statystyki sesji
     await client.query(
       `UPDATE sessions 
        SET last_activity = CURRENT_TIMESTAMP, 
@@ -24,6 +33,7 @@ async function saveConversation(sessionId, userMessage, aiResponse, responseTime
     );
     
     await client.query('COMMIT');
+    console.log(`✅ Conversation and session saved for: ${sessionId}`);
     return result.rows[0].id;
   } catch (error) {
     await client.query('ROLLBACK');
