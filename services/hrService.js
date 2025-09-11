@@ -4,7 +4,7 @@ const path = require('path');
 // Ładowanie pełnej bazy wiedzy HR
 let hrKnowledgeBase = null;
 
-// FLAGA TESTOWA – na start wymuszamy TEST = true
+// FLAGA TESTOWA – na start wymuszamy TEST = true (możemy przełączać przez API)
 let USE_TEST_KNOWLEDGE = true; 
 
 function loadHRKnowledgeBase() {
@@ -84,7 +84,7 @@ function getSystemPrompt() {
     return getDefaultSystemPrompt();
   }
 
-  const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (unikatowe info)' : 'PEŁNEJ';
+  const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (unikatowe info)' : 'PEŁNEJ PRODUKCYJNEJ';
 
   return `Jesteś ekspertem HR w Polsce. Odpowiadasz TYLKO na pytania związane z HR i prawem pracy w Polsce.
 
@@ -95,7 +95,7 @@ ${hrKnowledgeBase}
 
 WAŻNE INSTRUKCJE:
 1. Odpowiadaj WYŁĄCZNIE na podstawie powyższej bazy wiedzy.
-2. ${USE_TEST_KNOWLEDGE ? 'TEST: używaj tych unikatowych zasad (99 dni urlopu, 777 dni wypowiedzenia, czekoladowe monety itp.)' : 'PROD: używaj rzeczywistych danych z kompendium.'}
+2. ${USE_TEST_KNOWLEDGE ? 'TEST: używaj tych unikatowych zasad (99 dni urlopu, 777 dni wypowiedzenia, czekoladowe monety itp.)' : 'PROD: używaj rzeczywistych danych polskiego prawa pracy z kompendium.'}
 3. Jeśli w bazie nie ma danych – odpowiedz dosłownie: "Brak danych w bazie".
 4. Nie dodawaj informacji spoza pliku.
 5. Bądź zwięzły (max 400 słów) i prosty w języku.
@@ -138,19 +138,35 @@ function getFallbackResponse(message) {
     return 'Test: unikatowa baza – jeśli pytanie inne, odpowiedz "Brak danych w bazie".';
   }
 
-  if (lower.includes('urlop')) return 'W Polsce 20/26 dni urlopu.';
-  if (lower.includes('wypowiedzenie')) return 'Okresy wypowiedzenia: 2 tyg, 1 mies, 3 mies.';
-  if (lower.includes('wynagrodzenie')) return 'Minimalne wynagrodzenie 2024: 3490 zł brutto.';
-  return 'Jestem ekspertem HR w Polsce. O co chciałbyś zapytać z tego zakresu?';
+  // PRODUKCYJNE fallback odpowiedzi
+  if (lower.includes('urlop')) return 'W Polsce przysługuje 20 dni urlopu (wykształcenie podstawowe/zawodowe) lub 26 dni (średnie/wyższe).';
+  if (lower.includes('wypowiedzenie')) return 'Okresy wypowiedzenia: 2 tygodnie (do 6 mies pracy), 1 miesiąc (6 mies - 3 lata), 3 miesiące (powyżej 3 lat).';
+  if (lower.includes('wynagrodzenie') || lower.includes('płaca')) return 'Minimalne wynagrodzenie w 2024 roku: 3490 zł brutto miesięcznie.';
+  if (lower.includes('rodo')) return 'CV można przechowywać maksymalnie 12 miesięcy po zakończeniu rekrutacji.';
+  return 'Jestem ekspertem HR w Polsce. O co konkretnie chciałbyś zapytać z zakresu prawa pracy?';
 }
 
 // --- API pomocnicze
 function reloadKnowledgeBase() {
   return loadHRKnowledgeBase();
 }
+
 function setTestMode(enabled) {
+  console.log(`🔄 Switching mode: TEST=${enabled}`);
   USE_TEST_KNOWLEDGE = enabled;
-  return loadHRKnowledgeBase();
+  const success = loadHRKnowledgeBase();
+  console.log(`✅ Mode switched to: ${enabled ? 'TEST' : 'PROD'}`);
+  return success;
+}
+
+// NOWA: Funkcja do sprawdzania aktualnego trybu (potrzebna dla admin API)
+function getCurrentMode() {
+  return {
+    testMode: USE_TEST_KNOWLEDGE,
+    knowledgeFile: USE_TEST_KNOWLEDGE ? 'hr-kompendium-test.txt' : 'hr-kompendium.txt',
+    knowledgeSize: hrKnowledgeBase ? hrKnowledgeBase.length : 0,
+    loaded: !!hrKnowledgeBase
+  };
 }
 
 module.exports = { 
@@ -158,5 +174,6 @@ module.exports = {
   getFallbackResponse, 
   isHRRelated,
   reloadKnowledgeBase,
-  setTestMode
+  setTestMode,
+  getCurrentMode // ← NOWA funkcja dla admin API
 };
