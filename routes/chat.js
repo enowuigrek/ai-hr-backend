@@ -1,38 +1,93 @@
 const express = require('express');
 const router = express.Router();
-const { validateChatInput } = require('../middleware/validation');
-const { rateLimitMiddleware } = require('../middleware/rateLimit');
-const aiService = require('../services/aiService');
-const dbService = require('../services/dbService');
+const OpenAI = require('openai');
 
-// POST /api/chat
-router.post('/', rateLimitMiddleware, validateChatInput, async (req, res) => {
+// Jeśli masz własny rate limit – zostaw; jeśli nie, usuń ten import:
+let rateLimitMiddleware;
+try { ({ rateLimitMiddleware } = require('../middleware/rateLimit')); } catch { rateLimitMiddleware = (req,res,next)=>next(); }
+
+// Twój moduł z wiedzą (to, co właśnie edytowałeś)
+const { getSystemPrompt, isHRRelated, getFallbackResponse } = require('../services/hrService');
+
+// (Opcjonalnie) zapis do DB, jeśli masz takie funkcje – jeśli nie, usuń te linie użycia niżej
+let dbService = {};
+try { dbService = require('../services/dbService'); } catch {}
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// POST /api/chat  — główny endpoint
+router.post('/', rateLimitMiddleware, async (req, res) => {
+  const started = Date.now();
+
   try {
-    const { message, sessionId } = req.body;
+    const { message, sessionId } = req.body || {};
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message is required', code: 'INVALID_MESSAGE' });
+    }
 
-    const currentSessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    await dbService.createSession(currentSessionId);
+    // Minimalna walidacja sessionId (opcjonalnie masz dokładniejszą w sessions routerze)
+    if (!sessionId || typeof sessionId !== 'string' || sessionId.length > 100) {
+      return res.status(400).json({ error: 'Invalid sessionId', code: 'INVALID_SESSION_ID' });
+    }
 
-    const { response: aiResponse, responseTime } = await aiService.getAIResponse(message.trim(), currentSessionId);
+    // 1) Zbuduj system prompt z Twojej bazy (TEST / PROD)
+    const systemPrompt = getSystemPrompt();
 
-    const conversationId = await dbService.saveConversation(currentSessionId, message.trim(), aiResponse, responseTime);
+    // 2) Utnij user message, żeby nie wysyłać śmieci (opcjonalnie)
+    const userMessage = String(message).slice(0, 5000);
 
-    res.json({
-      success: true,
-      response: aiResponse,
-      sessionId: currentSessionId,
-      conversationId: conversationId,
-      timestamp: new Date().toISOString(),
-      responseTime: responseTime,
-      source: 'openai-gpt-4o-mini'
+    // 3) Złóż wiadomości dla OpenAI: system + user
+    const messages = [
+      {
+        role: 'system',
+        content:
+          systemPrompt +
+          '\n\nZASADA TWARDa: Odpowiadaj TYLKO na podstawie powyższego tekstu. ' +
+          'Jeśli w bazie nie ma informacji – odpowiedz dokładnie: "Brak danych w bazie".'
+      },
+      { role: 'user', content: userMessage }
+    ];
+
+    // 4) Wywołanie OpenAI (model z Twojego stacku)
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.2,        // niska, żeby trzymało się bazy
+      max_tokens: 600
     });
 
+    const aiText =
+      completion?.choices?.[0]?.message?.content?.trim() ||
+      'Brak danych w bazie';
+
+    // 5) (Opcjonalnie) zapisz rozmowę w DB, jeśli masz taką funkcję
+    try {
+      if (dbService.saveMessage) {
+        await dbService.saveMessage(sessionId, userMessage, aiText);
+      }
+    } catch (e) {
+      // nie blokuj odpowiedzi jeśli zapis się nie uda
+      console.warn('DB saveMessage warn:', e?.message || e);
+    }
+
+    const responseTime = Date.now() - started;
+
+    return res.json({
+      success: true,
+      response: aiText,
+      sessionId,
+      // jeśli Twój DB zwraca conversationId, dołóż go po zapisie
+      timestamp: new Date().toISOString(),
+      responseTime,
+      source: 'openai-gpt-4o-mini'
+    });
   } catch (error) {
     console.error('Chat error:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      code: 'CHAT_ERROR'
+    const responseTime = Date.now() - started;
+    return res.status(500).json({
+      error: 'Chat processing failed',
+      code: 'CHAT_ERROR',
+      responseTime
     });
   }
 });
