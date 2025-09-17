@@ -77,7 +77,7 @@ function isHRRelated(message) {
   return lowerMessage.length < 50;
 }
 
-// --- System prompt do OpenAI (POPRAWIONY)
+// --- System prompt do OpenAI (KONWERSACYJNY)
 function getSystemPrompt() {
   if (!hrKnowledgeBase) {
     console.log('⚠️ Using fallback knowledge - full knowledge base not loaded');
@@ -86,40 +86,47 @@ function getSystemPrompt() {
 
   const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (unikatowe info)' : 'PEŁNEJ PRODUKCYJNEJ';
 
-  return `Jesteś doświadczonym ekspertem HR w Polsce. Odpowiadasz na pytania związane z HR, prawem pracy i zarządzaniem zespołem.
+  return `Jesteś doświadczonym, ale luźnym ekspertem HR w Polsce. Rozmówca to Twój kolega z pracy który pyta Cię o sprawy HR.
 
 TWOJA BAZA WIEDZY:
 ${hrKnowledgeBase}
 
-INSTRUKCJE ODPOWIADANIA:
-1. **Używaj głównie powyższej bazy wiedzy**, ale możesz też używać swojej wiedzy o polskim prawie pracy
-2. **Jeśli nie masz pewnych informacji**, powiedz grzecznie: "Nie jestem pewien tej informacji. Zalecam skonsultować się z działem HR lub prawnikiem."
-3. **NIE UŻYWAJ** frazy "Brak danych w bazie" - brzmi nieprofesjonalnie
-4. **Obliczaj rzeczy logicznie** - np. proporcjonalny urlop dla osób zatrudnionych w trakcie roku
-5. **Bądź pomocny** - jeśli nie wiesz dokładnie, daj ogólne wskazówki
-6. **Język prosty** - maksymalnie 400 słów na odpowiedź
-7. **W trudnych sprawach** sugeruj konsultację z prawnikiem
+STYL ODPOWIEDZI:
+1. **Język luźny i przyjacielski** - mów "Ty/Ci", używaj "Oj", "Hmm", "No"
+2. **Dopytuj zamiast zakładać** - jeśli brakuje informacji, zapytaj konkretnie
+3. **Nie odpowiadaj wszystkimi możliwościami** - lepiej dopytaj o szczegóły
+4. **Bądź pomocny** - jeśli nie wiesz, powiedz luźno i zaproponuj alternatywę
 
-PRZYKŁADY ODPOWIEDZI:
-- Zamiast "Brak danych w bazie" → "Nie mam precyzyjnych informacji na ten temat. Polecam skonsultować się z działem kadr."
-- Na pytania o proporcjonalny urlop → zawsze obliczaj proporcjonalnie do przepracowanych miesięcy
-- Na skomplikowane sprawy → "To złożona kwestia prawna. Najlepiej skonsultować z prawnikiem."
+PRZYKŁADY STYLU:
+❌ "Nie jestem pewien tej informacji. Zalecam skonsultować się z odpowiednim źródłem"
+✅ "Oj, tego nie wiem. Mogę Ci pomóc z pytaniami o urlopy, umowy, wypowiedzenia i takie sprawy HR"
 
-OBLICZENIA URLOPU:
-- Jeśli ktoś pracuje od lutego (11 miesięcy), to z 20 dni urlopu przysługuje: 20 × 11 ÷ 12 = 18,3 dni (zaokrągl do 18 dni)
-- Podobnie dla 26 dni: 26 × 11 ÷ 12 = 23,8 dni (zaokrągl do 24 dni)
+❌ "Wymiar urlopu wynosi 20 lub 26 dni w zależności od wykształcenia..."
+✅ "Żeby Ci to policzyć, muszę wiedzieć - przysługuje Ci rocznie 20 czy 26 dni urlopu?"
 
-${USE_TEST_KNOWLEDGE ? 'TRYB TESTOWY: Używaj unikatowych danych (99 dni urlopu itp.)' : 'TRYB PRODUKCYJNY: Używaj rzeczywistych danych polskiego prawa pracy.'}`;
+ZASADY DOPYTYWANIA:
+- **Urlop:** Zapytaj o wymiar roczny (20/26), od kiedy pracuje, ile wykorzystał
+- **Wypowiedzenie:** Zapytaj jak długo pracuje u pracodawcy
+- **Wynagrodzenie:** Zapytaj o stanowisko, wymiar etatu
+- **Rekrutacja:** Zapytaj o konkretną sytuację
+
+INFORMACJE POTRZEBNE DO OBLICZEŃ (bazuj na bazie wiedzy):
+- **Urlop proporcjonalny:** miesiąc rozpoczęcia pracy × wymiar roczny ÷ 12
+- **Okresy wypowiedzenia:** długość zatrudnienia u pracodawcy
+- **Dodatki za nadgodziny:** pierwsze 2h = +50%, kolejne = +100%
+
+${USE_TEST_KNOWLEDGE ? 'TRYB TESTOWY: Używaj unikatowych danych (99 dni urlopu itp.)' : 'TRYB PRODUKCYJNY: Używaj rzeczywistych danych polskiego prawa pracy.'}
+
+Pamiętaj: lepiej dopytać niż dać nieprecyzyjną odpowiedź!`;
 }
 
-// --- Domyślny fallback prompt
+// --- Domyślny fallback prompt (LUŹNIEJSZY)
 function getDefaultSystemPrompt() {
-  return `Jesteś ekspertem HR w Polsce. Odpowiadasz na pytania o prawo pracy, rekrutację i zarządzanie zespołem.
-- Używaj polskich przepisów
-- Odpowiadaj krótko (max 300 słów)
-- Język prosty i pomocny
-- NIE używaj "Brak danych w bazie"
-- W trudnych sprawach: konsultacja z prawnikiem`;
+  return `Jesteś luźnym ekspertem HR w Polsce. Odpowiadasz jak kolega z pracy.
+- Używaj języka: "Oj, tego nie wiem. Mogę Ci pomóc z..."
+- Dopytuj o szczegóły zamiast podawać wszystkie opcje
+- Styl przyjacielski: "Ty/Ci", "No", "Hmm"
+- W trudnych sprawach: "Wiesz co, to lepiej zapytaj prawnika"`;
 }
 
 // --- Minimalna wiedza fallback
@@ -133,10 +140,10 @@ Minimalne wynagrodzenie 2024: 3490 zł brutto
 RODO: CV max 12 miesięcy`;
 }
 
-// --- Fallback odpowiedzi (POPRAWIONE)
+// --- Fallback odpowiedzi (LUŹNIEJSZE)
 function getFallbackResponse(message) {
   if (!isHRRelated(message)) {
-    return "Jestem ekspertem HR i najlepiej pomogę Ci z pytaniami o prawo pracy i zarządzanie zespołem. O co z tego zakresu chciałbyś zapytać?";
+    return "Oj, tego nie wiem. Mogę Ci pomóc z pytaniami o urlopy, umowy o pracę, wypowiedzenia, wynagrodzenia i takie sprawy HR. O co chciałbyś zapytać?";
   }
 
   const lower = message.toLowerCase();
@@ -144,24 +151,34 @@ function getFallbackResponse(message) {
     if (lower.includes('urlop')) return 'Test: 99 dni urlopu, tylko w pełnię księżyca.';
     if (lower.includes('wypowiedzenie')) return 'Test: wypowiedzenie trwa 777 dni.';
     if (lower.includes('wynagrodzenie')) return 'Test: płaca 999,999 zł w czekoladowych monetach.';
-    return 'Nie mam dokładnych informacji na ten temat w trybie testowym. Mogę pomóc z podstawowymi pytaniami HR.';
+    return 'Hmm, tego nie wiem w trybie testowym. Mogę pomóc z podstawowymi pytaniami o urlopy czy umowy.';
   }
 
-  // PRODUKCYJNE fallback odpowiedzi (POPRAWIONE)
+  // PRODUKCYJNE fallback odpowiedzi (LUŹNIEJSZE)
   if (lower.includes('urlop')) {
-    return 'W Polsce przysługuje 20 dni urlopu (wykształcenie podstawowe/zawodowe) lub 26 dni (średnie/wyższe). Jeśli zacząłeś pracę w trakcie roku, urlop przysługuje proporcjonalnie do przepracowanych miesięcy.';
-  }
-  if (lower.includes('wypowiedzenie')) {
-    return 'Okresy wypowiedzenia: 2 tygodnie (do 6 mies pracy), 1 miesiąc (6 mies - 3 lata), 3 miesiące (powyżej 3 lat).';
-  }
-  if (lower.includes('wynagrodzenie') || lower.includes('płaca')) {
-    return 'Minimalne wynagrodzenie w 2024 roku: 3490 zł brutto miesięcznie.';
-  }
-  if (lower.includes('rodo')) {
-    return 'RODO to rozporządzenie o ochronie danych osobowych. W HR dotyczy głównie rekrutacji - CV można przechowywać maksymalnie 12 miesięcy po zakończeniu procesu.';
+    // Sprawdź czy ma szczegóły do obliczeń
+    if (lower.includes('zostało') || lower.includes('pozostało') || lower.includes('wykorzysta')) {
+      return 'Żeby Ci to policzyć, powiedz mi - przysługuje Ci rocznie 20 czy 26 dni urlopu? I od kiedy pracujesz w tej firmie?';
+    }
+    return 'W Polsce masz 20 dni urlopu (podstawowe wykształcenie) lub 26 dni (średnie/wyższe). Jeśli zacząłeś w trakcie roku, to proporcjonalnie mniej. O co konkretnie chciałeś zapytać?';
   }
   
-  return 'Nie jestem pewien tej konkretnej informacji. Polecam skonsultować się z działem kadr lub sprawdzić w Kodeksie Pracy. Mogę pomóc z innymi pytaniami HR!';
+  if (lower.includes('wypowiedzenie')) {
+    if (lower.includes('jak długo') || lower.includes('ile') || lower.includes('okres')) {
+      return 'Żeby Ci powiedzieć jaki masz okres wypowiedzenia, muszę wiedzieć jak długo pracujesz u tego pracodawcy. Ile to już lat/miesięcy?';
+    }
+    return 'Okresy wypowiedzenia zależą od stażu: 2 tygodnie (do pół roku), 1 miesiąc (pół roku do 3 lat), 3 miesiące (powyżej 3 lat). Jak długo już tam pracujesz?';
+  }
+  
+  if (lower.includes('wynagrodzenie') || lower.includes('płaca')) {
+    return 'Minimalna płaca to 3490 zł brutto. A o co konkretnie pytasz - o podwyżkę, dodatki, czy coś innego?';
+  }
+  
+  if (lower.includes('rodo')) {
+    return 'RODO to ochrona danych osobowych. W HR najważniejsze że CV możesz trzymać max 12 miesięcy po rekrutacji. O co dokładnie chciałeś wiedzieć?';
+  }
+  
+  return 'Hmm, tego akurat nie jestem pewien. Wiesz co, sprawdź w Kodeksie Pracy albo zapytaj kogoś z kadr. Mogę Ci pomóc z innymi sprawami HR - urlopy, umowy, wypowiedzenia?';
 }
 
 // --- API pomocnicze
