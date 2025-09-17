@@ -4,8 +4,8 @@ const path = require('path');
 // Ładowanie pełnej bazy wiedzy HR
 let hrKnowledgeBase = null;
 
-// ZMIANA: Przełącz na tryb PRODUKCYJNY ✅
-let USE_TEST_KNOWLEDGE = false; // ← ZMIENIONE z true na false
+// FLAGA PRODUKCYJNA
+let USE_TEST_KNOWLEDGE = false;
 
 function loadHRKnowledgeBase() {
   try {
@@ -39,16 +39,16 @@ loadHRKnowledgeBase();
 // --- Lista słów kluczowych HR
 const HR_KEYWORDS = [
   'urlop', 'umowa', 'pracownik', 'pracodawca', 'wynagrodzenie', 'rekrutacja', 
-  'zwolnienie', 'wypowiedzenie', 'rodo', 'hr', 'praca', 'zespół', 'mobbing', 
-  'ocena', 'bhp', 'bezpieczeństwo',
+  'zwolnienie', 'wypowiedzenie', 'rodo', 'gdpr', 'hr', 'praca', 'zespół', 'mobbing', 
+  'ocena', 'bhp', 'bezpieczeństwo', 'dane osobowe', 'prywatność', 'zgoda',
   'zatrudnienie', 'etat', 'kontrakt', 'pensja', 'płaca', 'stawka', 'bonus',
   'premie', 'nadgodziny', 'godziny', 'rozmowa kwalifikacyjna', 'cv', 
   'kandydat', 'stanowisko', 'awans', 'degradacja', 'urlop macierzyński',
   'urlop ojcowski', 'zwolnienie lekarskie', 'okres próbny', 'mentoring',
   'szkolenia', 'rozwój zawodowy', 'kompetencje', 'ocena pracownicza',
-  'molestowanie', 'dyskryminacja', 'równe traktowanie', 'dane osobowe',
-  'przetwarzanie danych', 'zgodnie z rodo', 'kodeks pracy', 'minimum płacowe',
-  'czas pracy', 'elastyczny czas', 'home office', 'praca zdalna'
+  'molestowanie', 'dyskryminacja', 'równe traktowanie', 'przetwarzanie danych',
+  'kodeks pracy', 'minimum płacowe', 'czas pracy', 'elastyczny czas', 
+  'home office', 'praca zdalna', 'wypoczynkowy', 'macierzyński', 'ojcowski'
 ];
 
 // --- Lista tematów NON-HR
@@ -77,7 +77,7 @@ function isHRRelated(message) {
   return lowerMessage.length < 50;
 }
 
-// --- System prompt do OpenAI
+// --- System prompt do OpenAI (POPRAWIONY)
 function getSystemPrompt() {
   if (!hrKnowledgeBase) {
     console.log('⚠️ Using fallback knowledge - full knowledge base not loaded');
@@ -86,22 +86,30 @@ function getSystemPrompt() {
 
   const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (unikatowe info)' : 'PEŁNEJ PRODUKCYJNEJ';
 
-  return `Jesteś ekspertem HR w Polsce. Odpowiadasz TYLKO na pytania związane z HR i prawem pracy w Polsce.
-
-ŹRÓDŁO WIEDZY: Używasz ${knowledgeStatus} bazy wiedzy załadowanej z pliku.
+  return `Jesteś doświadczonym ekspertem HR w Polsce. Odpowiadasz na pytania związane z HR, prawem pracy i zarządzaniem zespołem.
 
 TWOJA BAZA WIEDZY:
 ${hrKnowledgeBase}
 
-WAŻNE INSTRUKCJE:
-1. Odpowiadaj WYŁĄCZNIE na podstawie powyższej bazy wiedzy.
-2. ${USE_TEST_KNOWLEDGE ? 'TEST: używaj tych unikatowych zasad (99 dni urlopu, 777 dni wypowiedzenia, czekoladowe monety itp.)' : 'PROD: używaj rzeczywistych danych polskiego prawa pracy z kompendium.'}
-3. Jeśli w bazie nie ma danych – odpowiedz dosłownie: "Brak danych w bazie".
-4. Nie dodawaj informacji spoza pliku.
-5. Bądź zwięzły (max 400 słów) i prosty w języku.
-6. Przy trudnych sprawach wspomnij o konsultacji z prawnikiem.
-7. Jeśli pytanie spoza HR – grzecznie odmów.
-`;
+INSTRUKCJE ODPOWIADANIA:
+1. **Używaj głównie powyższej bazy wiedzy**, ale możesz też używać swojej wiedzy o polskim prawie pracy
+2. **Jeśli nie masz pewnych informacji**, powiedz grzecznie: "Nie jestem pewien tej informacji. Zalecam skonsultować się z działem HR lub prawnikiem."
+3. **NIE UŻYWAJ** frazy "Brak danych w bazie" - brzmi nieprofesjonalnie
+4. **Obliczaj rzeczy logicznie** - np. proporcjonalny urlop dla osób zatrudnionych w trakcie roku
+5. **Bądź pomocny** - jeśli nie wiesz dokładnie, daj ogólne wskazówki
+6. **Język prosty** - maksymalnie 400 słów na odpowiedź
+7. **W trudnych sprawach** sugeruj konsultację z prawnikiem
+
+PRZYKŁADY ODPOWIEDZI:
+- Zamiast "Brak danych w bazie" → "Nie mam precyzyjnych informacji na ten temat. Polecam skonsultować się z działem kadr."
+- Na pytania o proporcjonalny urlop → zawsze obliczaj proporcjonalnie do przepracowanych miesięcy
+- Na skomplikowane sprawy → "To złożona kwestia prawna. Najlepiej skonsultować z prawnikiem."
+
+OBLICZENIA URLOPU:
+- Jeśli ktoś pracuje od lutego (11 miesięcy), to z 20 dni urlopu przysługuje: 20 × 11 ÷ 12 = 18,3 dni (zaokrągl do 18 dni)
+- Podobnie dla 26 dni: 26 × 11 ÷ 12 = 23,8 dni (zaokrągl do 24 dni)
+
+${USE_TEST_KNOWLEDGE ? 'TRYB TESTOWY: Używaj unikatowych danych (99 dni urlopu itp.)' : 'TRYB PRODUKCYJNY: Używaj rzeczywistych danych polskiego prawa pracy.'}`;
 }
 
 // --- Domyślny fallback prompt
@@ -109,14 +117,15 @@ function getDefaultSystemPrompt() {
   return `Jesteś ekspertem HR w Polsce. Odpowiadasz na pytania o prawo pracy, rekrutację i zarządzanie zespołem.
 - Używaj polskich przepisów
 - Odpowiadaj krótko (max 300 słów)
-- Język prosty
+- Język prosty i pomocny
+- NIE używaj "Brak danych w bazie"
 - W trudnych sprawach: konsultacja z prawnikiem`;
 }
 
 // --- Minimalna wiedza fallback
 function getDefaultKnowledge() {
   return `# PODSTAWOWA WIEDZA HR - POLSKA
-Urlop: 20/26 dni
+Urlop: 20/26 dni (proporcjonalnie do przepracowanych miesięcy)
 Urlop macierzyński: 20 tygodni
 Urlop ojcowski: 2 tygodnie
 Okres wypowiedzenia: 2 tyg / 1 mies / 3 mies
@@ -124,10 +133,10 @@ Minimalne wynagrodzenie 2024: 3490 zł brutto
 RODO: CV max 12 miesięcy`;
 }
 
-// --- Fallback odpowiedzi (jeśli OpenAI nie zwróci)
+// --- Fallback odpowiedzi (POPRAWIONE)
 function getFallbackResponse(message) {
   if (!isHRRelated(message)) {
-    return "Jestem ekspertem HR i odpowiadam tylko na pytania o HR i prawo pracy w Polsce.";
+    return "Jestem ekspertem HR i najlepiej pomogę Ci z pytaniami o prawo pracy i zarządzanie zespołem. O co z tego zakresu chciałbyś zapytać?";
   }
 
   const lower = message.toLowerCase();
@@ -135,15 +144,24 @@ function getFallbackResponse(message) {
     if (lower.includes('urlop')) return 'Test: 99 dni urlopu, tylko w pełnię księżyca.';
     if (lower.includes('wypowiedzenie')) return 'Test: wypowiedzenie trwa 777 dni.';
     if (lower.includes('wynagrodzenie')) return 'Test: płaca 999,999 zł w czekoladowych monetach.';
-    return 'Test: unikatowa baza – jeśli pytanie inne, odpowiedz "Brak danych w bazie".';
+    return 'Nie mam dokładnych informacji na ten temat w trybie testowym. Mogę pomóc z podstawowymi pytaniami HR.';
   }
 
-  // PRODUKCYJNE fallback odpowiedzi
-  if (lower.includes('urlop')) return 'W Polsce przysługuje 20 dni urlopu (wykształcenie podstawowe/zawodowe) lub 26 dni (średnie/wyższe).';
-  if (lower.includes('wypowiedzenie')) return 'Okresy wypowiedzenia: 2 tygodnie (do 6 mies pracy), 1 miesiąc (6 mies - 3 lata), 3 miesiące (powyżej 3 lat).';
-  if (lower.includes('wynagrodzenie') || lower.includes('płaca')) return 'Minimalne wynagrodzenie w 2024 roku: 3490 zł brutto miesięcznie.';
-  if (lower.includes('rodo')) return 'CV można przechowywać maksymalnie 12 miesięcy po zakończeniu rekrutacji.';
-  return 'Jestem ekspertem HR w Polsce. O co konkretnie chciałbyś zapytać z zakresu prawa pracy?';
+  // PRODUKCYJNE fallback odpowiedzi (POPRAWIONE)
+  if (lower.includes('urlop')) {
+    return 'W Polsce przysługuje 20 dni urlopu (wykształcenie podstawowe/zawodowe) lub 26 dni (średnie/wyższe). Jeśli zacząłeś pracę w trakcie roku, urlop przysługuje proporcjonalnie do przepracowanych miesięcy.';
+  }
+  if (lower.includes('wypowiedzenie')) {
+    return 'Okresy wypowiedzenia: 2 tygodnie (do 6 mies pracy), 1 miesiąc (6 mies - 3 lata), 3 miesiące (powyżej 3 lat).';
+  }
+  if (lower.includes('wynagrodzenie') || lower.includes('płaca')) {
+    return 'Minimalne wynagrodzenie w 2024 roku: 3490 zł brutto miesięcznie.';
+  }
+  if (lower.includes('rodo')) {
+    return 'RODO to rozporządzenie o ochronie danych osobowych. W HR dotyczy głównie rekrutacji - CV można przechowywać maksymalnie 12 miesięcy po zakończeniu procesu.';
+  }
+  
+  return 'Nie jestem pewien tej konkretnej informacji. Polecam skonsultować się z działem kadr lub sprawdzić w Kodeksie Pracy. Mogę pomóc z innymi pytaniami HR!';
 }
 
 // --- API pomocnicze
@@ -159,7 +177,7 @@ function setTestMode(enabled) {
   return success;
 }
 
-// NOWA: Funkcja do sprawdzania aktualnego trybu (potrzebna dla admin API)
+// Funkcja do sprawdzania aktualnego trybu
 function getCurrentMode() {
   return {
     testMode: USE_TEST_KNOWLEDGE,
@@ -175,5 +193,5 @@ module.exports = {
   isHRRelated,
   reloadKnowledgeBase,
   setTestMode,
-  getCurrentMode // ← NOWA funkcja dla admin API
+  getCurrentMode
 };
