@@ -48,8 +48,7 @@ const HR_KEYWORDS = [
   'szkolenia', 'rozwój zawodowy', 'kompetencje', 'ocena pracownicza',
   'molestowanie', 'dyskryminacja', 'równe traktowanie', 'przetwarzanie danych',
   'kodeks pracy', 'minimum płacowe', 'czas pracy', 'elastyczny czas', 
-  'home office', 'praca zdalna', 'wypoczynkowy', 'macierzyński', 'ojcowski',
-  'zostało', 'pozostało', 'wykorzystał', 'wakacje', 'wyjazd'
+  'home office', 'praca zdalna', 'wypoczynkowy', 'macierzyński', 'ojcowski'
 ];
 
 // --- Lista tematów NON-HR
@@ -59,7 +58,7 @@ const NON_HR_TOPICS = [
   'film','serial','muzyka','książka','gra','gaming',
   'technologia','programowanie','kod','python','javascript',
   'telefon','komputer','auto','samochód','transport',
-  'podróże','wakacje','turystyka','hotel', 'dupa', 'pizza',
+  'podróże','wakacje','turystyka','hotel',
   'medycyna','lekarz','choroby','leki','zdrowie',
   'polityka','wybory','rząd','prezydent','parlament'
 ];
@@ -72,21 +71,13 @@ function isHRRelated(message) {
                          lowerMessage.includes('możesz') ||
                          lowerMessage.includes('co umiesz') ||
                          lowerMessage.includes('jak działa');
-  
-  // Specjalne przypadki - kontekst urlopu
-  if (lowerMessage.includes('zostało') || lowerMessage.includes('pozostało') || 
-      lowerMessage.includes('wykorzysta') || lowerMessage.includes('byłem') ||
-      lowerMessage.includes('wyjazd') || lowerMessage.includes('wakacje')) {
-    return true;
-  }
-  
   if (isHelpQuestion) return true;
   if (hasNonHRTopics && !hasHRKeywords) return false;
   if (hasHRKeywords) return true;
   return lowerMessage.length < 50;
 }
 
-// --- System prompt do OpenAI (Z LEPSZYM ROZUMIENIEM KONTEKSTU)
+// --- System prompt do OpenAI (KONWERSACYJNY)
 function getSystemPrompt() {
   if (!hrKnowledgeBase) {
     console.log('⚠️ Using fallback knowledge - full knowledge base not loaded');
@@ -95,62 +86,61 @@ function getSystemPrompt() {
 
   const knowledgeStatus = USE_TEST_KNOWLEDGE ? 'TESTOWEJ (unikatowe info)' : 'PEŁNEJ PRODUKCYJNEJ';
 
-  return `Jesteś doświadczonym ekspertem HR w Polsce. Rozmówca to Twój kolega z pracy który pyta o sprawy HR. Jesteś sprytny w rozumieniu kontekstu.
+  return `Jesteś doświadczonym, ale luźnym ekspertem HR w Polsce. Rozmówca to Twój kolega z pracy który pyta Cię o sprawy HR.
 
 TWOJA BAZA WIEDZY:
 ${hrKnowledgeBase}
 
 STYL ODPOWIEDZI:
 1. **Język luźny i przyjacielski** - mów "Ty/Ci", używaj "Oj", "Hmm", "No"
-2. **ROZUMIEJ KONTEKST** - jeśli ktoś mówi "byłem 2 tygodnie w Hiszpanii" w kontekście urlopu, to znaczy że wykorzystał 14 dni urlopu
-3. **Dopytuj mądrze** - ale nie gdy masz wszystkie potrzebne informacje
-4. **Łącz informacje** - jeśli ktoś pracuje "od 10 lat", automatycznie wie że ma 26 dni urlopu
+2. **Dopytuj zamiast zakładać** - jeśli brakuje informacji, zapytaj konkretnie
+3. **Nie odpowiadaj wszystkimi możliwościami** - lepiej dopytaj o szczegóły
+4. **Bądź pomocny** - jeśli nie wiesz, powiedz luźno i zaproponuj alternatywę
 
-ROZUMIENIE KONTEKSTU:
-- "Byłem X tygodni/dni w [miejsce]" = wykorzystany urlop
-- "Pracuję od X lat" → jeśli ≥10 lat = 26 dni urlopu, jeśli <10 lat = 20 dni
-- "2 tygodnie" = 14 dni kalendarzowych = 10 dni roboczych urlopu
-- "Tydzień" = 7 dni kalendarzowych = 5 dni roboczych urlopu
+PRZYKŁADY STYLU:
+❌ "Nie jestem pewien tej informacji. Zalecam skonsultować się z odpowiednim źródłem"
+✅ "Oj, tego nie wiem. Mogę Ci pomóc z pytaniami o urlopy, umowy, wypowiedzenia i takie sprawy HR"
 
-PRZYKŁADY INTELIGENTNEGO ROZUMIENIA:
-❌ "Hmm, rozumiem że byłeś w Hiszpanii. Ile dni urlopu wykorzystałeś?"
-✅ "OK, czyli wykorzystałeś 2 tygodnie urlopu (10 dni roboczych). Skoro pracujesz od 10 lat, masz 26 dni rocznie, więc zostało Ci 16 dni urlopu."
+❌ "Wymiar urlopu wynosi 20 lub 26 dni w zależności od wykształcenia..."
+✅ "Żeby Ci to policzyć, muszę wiedzieć - przysługuje Ci rocznie 20 czy 26 dni urlopu?"
 
-❌ "Nie rozumiem co masz na myśli"
-✅ "Ah, rozumiem - chcesz wiedzieć ile urlopu Ci zostało po tych wakacjach w Hiszpanii!"
+ZASADY DOPYTYWANIA:
+- **Urlop:** Zapytaj o wymiar roczny (20/26), od kiedy pracuje, ile wykorzystał
+- **Wypowiedzenie:** Zapytaj jak długo pracuje u pracodawcy
+- **Wynagrodzenie:** Zapytaj o stanowisko, wymiar etatu
+- **Rekrutacja:** Zapytaj o konkretną sytuację
 
-OBLICZENIA:
-- **Długość pracy → wymiar urlopu:** ≥10 lat = 26 dni, <10 lat = 20 dni
-- **Tygodnie urlopu:** 1 tydzień = 5 dni roboczych, 2 tygodnie = 10 dni roboczych
-- **Urlop proporcjonalny:** jeśli od [miesiąc] to: wymiar × (12-miesiąc+1) ÷ 12
+INFORMACJE POTRZEBNE DO OBLICZEŃ (bazuj na bazie wiedzy):
+- **Urlop proporcjonalny:** miesiąc rozpoczęcia pracy × wymiar roczny ÷ 12
+- **Okresy wypowiedzenia:** długość zatrudnienia u pracodawcy
+- **Dodatki za nadgodziny:** pierwsze 2h = +50%, kolejne = +100%
 
 ${USE_TEST_KNOWLEDGE ? 'TRYB TESTOWY: Używaj unikatowych danych (99 dni urlopu itp.)' : 'TRYB PRODUKCYJNY: Używaj rzeczywistych danych polskiego prawa pracy.'}
 
-Pamiętaj: bądź sprytny, łącz informacje, rozumiej kontekst rozmowy!`;
+Pamiętaj: lepiej dopytać niż dać nieprecyzyjną odpowiedź!`;
 }
 
-// --- Domyślny fallback prompt (SPRYTNIEJSZY)
+// --- Domyślny fallback prompt (LUŹNIEJSZY)
 function getDefaultSystemPrompt() {
-  return `Jesteś sprytnym ekspertem HR w Polsce. Rozumiesz kontekst rozmowy.
-- Język luźny: "Oj, tego nie wiem. Mogę Ci pomóc z..."
-- Rozumiej kontekst: "2 tygodnie w Hiszpanii" = wykorzystany urlop
-- Łącz informacje: "pracuję od 10 lat" = 26 dni urlopu
+  return `Jesteś luźnym ekspertem HR w Polsce. Odpowiadasz jak kolega z pracy.
+- Używaj języka: "Oj, tego nie wiem. Mogę Ci pomóc z..."
+- Dopytuj o szczegóły zamiast podawać wszystkie opcje
+- Styl przyjacielski: "Ty/Ci", "No", "Hmm"
 - W trudnych sprawach: "Wiesz co, to lepiej zapytaj prawnika"`;
 }
 
 // --- Minimalna wiedza fallback
 function getDefaultKnowledge() {
   return `# PODSTAWOWA WIEDZA HR - POLSKA
-Urlop: 20 dni (<10 lat pracy) lub 26 dni (≥10 lat pracy)
+Urlop: 20/26 dni (proporcjonalnie do przepracowanych miesięcy)
 Urlop macierzyński: 20 tygodni
 Urlop ojcowski: 2 tygodnie
 Okres wypowiedzenia: 2 tyg / 1 mies / 3 mies
 Minimalne wynagrodzenie 2024: 3490 zł brutto
-RODO: CV max 12 miesięcy
-Urlop w dniach roboczych: 1 tydzień = 5 dni, 2 tygodnie = 10 dni`;
+RODO: CV max 12 miesięcy`;
 }
 
-// --- Fallback odpowiedzi (SPRYTNIEJSZE)
+// --- Fallback odpowiedzi (LUŹNIEJSZE)
 function getFallbackResponse(message) {
   if (!isHRRelated(message)) {
     return "Oj, tego nie wiem. Mogę Ci pomóc z pytaniami o urlopy, umowy o pracę, wypowiedzenia, wynagrodzenia i takie sprawy HR. O co chciałbyś zapytać?";
@@ -164,37 +154,20 @@ function getFallbackResponse(message) {
     return 'Hmm, tego nie wiem w trybie testowym. Mogę pomóc z podstawowymi pytaniami o urlopy czy umowy.';
   }
 
-  // PRODUKCYJNE fallback odpowiedzi (SPRYTNIEJSZE)
-  if (lower.includes('urlop') || lower.includes('zostało') || lower.includes('wykorzysta') || 
-      lower.includes('byłem') || lower.includes('wakacje')) {
-    
-    // Próbuj wyciągnąć informacje z kontekstu
-    const hasYears = lower.match(/(\d+)\s*(lat|rok)/);
-    const hasWeeks = lower.match(/(\d+)\s*(tyg|tydzień)/);
-    const hasDays = lower.match(/(\d+)\s*dni/);
-    
-    if (hasYears && hasWeeks) {
-      const years = parseInt(hasYears[1]);
-      const weeks = parseInt(hasWeeks[1]);
-      const yearlyDays = years >= 10 ? 26 : 20;
-      const usedDays = weeks * 5; // tygodnie na dni robocze
-      const remaining = yearlyDays - usedDays;
-      
-      return `OK, rozumiem! Skoro pracujesz od ${years} lat, masz ${yearlyDays} dni urlopu rocznie. ${weeks} tygodnie to ${usedDays} dni roboczych urlopu, więc zostało Ci ${remaining} dni urlopu.`;
+  // PRODUKCYJNE fallback odpowiedzi (LUŹNIEJSZE)
+  if (lower.includes('urlop')) {
+    // Sprawdź czy ma szczegóły do obliczeń
+    if (lower.includes('zostało') || lower.includes('pozostało') || lower.includes('wykorzysta')) {
+      return 'Żeby Ci to policzyć, powiedz mi - przysługuje Ci rocznie 20 czy 26 dni urlopu? I od kiedy pracujesz w tej firmie?';
     }
-    
-    if (lower.includes('zostało') || lower.includes('pozostało')) {
-      return 'Żeby to policzyć, powiedz mi - ile lat już pracujesz? I ile dni/tygodni urlopu wykorzystałeś w tym roku?';
-    }
-    
-    return 'W Polsce masz 20 dni urlopu (do 10 lat pracy) lub 26 dni (10+ lat). Jeśli zacząłeś w trakcie roku, to proporcjonalnie. O co konkretnie pytasz?';
+    return 'W Polsce masz 20 dni urlopu (podstawowe wykształcenie) lub 26 dni (średnie/wyższe). Jeśli zacząłeś w trakcie roku, to proporcjonalnie mniej. O co konkretnie chciałeś zapytać?';
   }
   
   if (lower.includes('wypowiedzenie')) {
     if (lower.includes('jak długo') || lower.includes('ile') || lower.includes('okres')) {
       return 'Żeby Ci powiedzieć jaki masz okres wypowiedzenia, muszę wiedzieć jak długo pracujesz u tego pracodawcy. Ile to już lat/miesięcy?';
     }
-    return 'Okresy wypowiedzenia: 2 tygodnie (do pół roku), 1 miesiąc (pół roku do 3 lat), 3 miesiące (powyżej 3 lat). Jak długo tam pracujesz?';
+    return 'Okresy wypowiedzenia zależą od stażu: 2 tygodnie (do pół roku), 1 miesiąc (pół roku do 3 lat), 3 miesiące (powyżej 3 lat). Jak długo już tam pracujesz?';
   }
   
   if (lower.includes('wynagrodzenie') || lower.includes('płaca')) {
@@ -233,7 +206,7 @@ function getCurrentMode() {
 
 module.exports = { 
   getSystemPrompt, 
-  getFbackResponse, 
+  getFallbackResponse, 
   isHRRelated,
   reloadKnowledgeBase,
   setTestMode,
