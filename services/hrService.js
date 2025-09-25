@@ -5,7 +5,7 @@ const path = require('path');
 let hrKnowledgeBase = null;
 
 // FLAGA PRODUKCYJNA
-let USE_TEST_KNOWLEDGE = false;
+let USE_TEST_KNOWLEDGE = true;
 
 function loadHRKnowledgeBase() {
   try {
