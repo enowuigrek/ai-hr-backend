@@ -70,13 +70,22 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
         content: systemPrompt + 
           '\n\nZASADA TWARDA: Odpowiadaj TYLKO na podstawie powyższego tekstu. ' +
           'Jeśli w bazie nie ma informacji – odpowiedz dokładnie: "Brak danych w bazie".' +
-          '\n\n🔥 OBSŁUGA KONTEKSTU - BARDZO WAŻNE:' +
-          '\n1. ZAWSZE sprawdzaj poprzednie wiadomości w rozmowie' +
-          '\n2. Jeśli wcześniej pytałeś o staż pracy/wykształcenie/szczegóły, a użytkownik odpowiada pojedynczymi słowami lub liczbami - TO SĄ ODPOWIEDZI NA TWOJE PYTANIA!' +
-          '\n3. Przykład: Ty: "Ile lat pracujesz?" → Użytkownik: "3 lata" lub "3" = odpowiedź na Twoje pytanie' +
-          '\n4. Przykład: Ty: "26 dni urlopu?" → Użytkownik: "26" = potwierdza 26 dni urlopu' +
-          '\n5. Nie pytaj ponownie o to samo - wykorzystaj podane dane do obliczeń!' +
-          '\n6. Jeśli dane są dziwne (np. 100 lat pracy), grzecznie zapytaj czy na pewno, ale nie ignoruj kontekstu'
+          '\n\n🔥🔥🔥 KRYTYCZNE: OBSŁUGA KONTEKSTU ROZMOWY 🔥🔥🔥' +
+          '\nCZYTAJ UWAŻNIE POPRZEDNIE WIADOMOŚCI W TEJ ROZMOWIE!' +
+          '\n\n📋 ZASADY:' +
+          '\n1. Jeśli wcześniej pytałeś "Ile lat pracujesz?" a użytkownik teraz pisze "10 lat" - TO JEST ODPOWIEDŹ!' +
+          '\n2. Jeśli pytałeś "26 dni urlopu?" a użytkownik pisze "26" - POTWIERDZA 26 dni!' +
+          '\n3. Jeśli pytałeś o staż i użytkownik odpowiedział "10 lat", NIE PYTAJ PONOWNIE o staż!' +
+          '\n4. WYKORZYSTAJ dane z poprzednich odpowiedzi do obliczeń!' +
+          '\n\n💡 PRZYKŁAD DOBREJ ROZMOWY:' +
+          '\nTy: "Ile lat pracujesz?"' +
+          '\nUser: "10 lat"' +
+          '\nTy: "Skoro pracujesz 10 lat, przysługuje Ci 3 miesiące wypowiedzenia"' +
+          '\n\n❌ NIE RÓB TAK:' +
+          '\nTy: "Ile lat pracujesz?"' +
+          '\nUser: "10 lat"' +
+          '\nTy: "Ile lat pracujesz?" ← BŁĄD!' +
+          '\n\n🧠 PAMIĘTAJ: Jeśli widzisz wcześniejsze pytania i odpowiedzi, UŻYJ ICH!'
       }
     ];
 
@@ -109,8 +118,16 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
         index: i,
         role: msg.role,
         contentLength: msg.content.length,
-        preview: msg.content.substring(0, 30) + '...'
+        preview: msg.role === 'system' ? '[SYSTEM PROMPT]' : msg.content.substring(0, 100) + '...'
       }))
+    });
+
+    // 🚨 FORCE DEBUG - pokaż DOKŁADNIE co wysyłamy do OpenAI
+    console.log('🚨 FULL MESSAGES ARRAY BEING SENT TO OPENAI:');
+    messages.forEach((msg, index) => {
+      console.log(`Message ${index} (${msg.role}):`, 
+        msg.role === 'system' ? '[SYSTEM PROMPT - HIDDEN]' : `"${msg.content}"`
+      );
     });
 
     // 6) Wywołanie OpenAI z lepszymi parametrami dla kontekstu
