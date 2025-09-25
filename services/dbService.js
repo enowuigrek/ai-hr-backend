@@ -46,6 +46,9 @@ async function saveConversation(sessionId, userMessage, aiResponse, responseTime
 
 async function getConversationHistory(sessionId, limit = 20, offset = 0) {
   try {
+    // 🚀 POPRAWKA: Dodane logowanie dla debugowania
+    console.log('🔍 Getting conversation history:', { sessionId, limit, offset });
+    
     const result = await pool.query(
       `SELECT user_message, ai_response, timestamp 
        FROM conversations 
@@ -60,14 +63,89 @@ async function getConversationHistory(sessionId, limit = 20, offset = 0) {
       [sessionId]
     );
     
+    console.log('📊 History query result:', {
+      sessionId,
+      found: result.rows.length,
+      total: parseInt(countResult.rows[0].total),
+      firstMessage: result.rows[0] ? result.rows[0].user_message.substring(0, 50) + '...' : 'none'
+    });
+    
     return {
       messages: result.rows,
       total: parseInt(countResult.rows[0].total),
       hasMore: offset + result.rows.length < parseInt(countResult.rows[0].total)
     };
   } catch (error) {
-    console.error('Error getting conversation history:', error);
+    console.error('❌ Error getting conversation history:', error);
     return { messages: [], total: 0, hasMore: false };
+  }
+}
+
+// 🚀 NOWA FUNKCJA: Pobierz tylko ostatnie N par wiadomości dla kontekstu
+async function getRecentConversationContext(sessionId, pairs = 4) {
+  try {
+    console.log('🔍 Getting recent context:', { sessionId, pairs });
+    
+    // Pobierz ostatnie N*2 wiadomości (każda para to user + assistant)
+    const result = await pool.query(
+      `SELECT user_message, ai_response, timestamp 
+       FROM conversations 
+       WHERE session_id = $1 
+       ORDER BY timestamp DESC 
+       LIMIT $2`,
+      [sessionId, pairs]
+    );
+    
+    // Odwróć kolejność żeby były od najstarszych
+    const messages = result.rows.reverse();
+    
+    console.log('📊 Recent context result:', {
+      sessionId,
+      pairs: messages.length,
+      latestMessage: messages.length > 0 ? messages[messages.length - 1].user_message.substring(0, 50) + '...' : 'none'
+    });
+    
+    return {
+      messages: messages,
+      total: messages.length
+    };
+  } catch (error) {
+    console.error('❌ Error getting recent context:', error);
+    return { messages: [], total: 0 };
+  }
+}
+
+// 🚀 NOWA FUNKCJA: Pobierz tylko ostatnie N par wiadomości dla kontekstu
+async function getRecentConversationContext(sessionId, pairs = 4) {
+  try {
+    console.log('🔍 Getting recent context:', { sessionId, pairs });
+    
+    // Pobierz ostatnie N*2 wiadomości (każda para to user + assistant)
+    const result = await pool.query(
+      `SELECT user_message, ai_response, timestamp 
+       FROM conversations 
+       WHERE session_id = $1 
+       ORDER BY timestamp DESC 
+       LIMIT $2`,
+      [sessionId, pairs]
+    );
+    
+    // Odwróć kolejność żeby były od najstarszych
+    const messages = result.rows.reverse();
+    
+    console.log('📊 Recent context result:', {
+      sessionId,
+      pairs: messages.length,
+      latestMessage: messages.length > 0 ? messages[messages.length - 1].user_message.substring(0, 50) + '...' : 'none'
+    });
+    
+    return {
+      messages: messages,
+      total: messages.length
+    };
+  } catch (error) {
+    console.error('❌ Error getting recent context:', error);
+    return { messages: [], total: 0 };
   }
 }
 
@@ -194,6 +272,7 @@ async function deactivateSession(sessionId) {
 module.exports = {
   saveConversation,
   getConversationHistory,
+  getRecentConversationContext, // 🚀 NOWA FUNKCJA
   createSession,
   getAllSessions,
   getSessionInfo,

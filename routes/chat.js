@@ -51,39 +51,89 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
     // 2) Zbuduj system prompt z bazy wiedzy (TEST/PROD)
     const systemPrompt = getSystemPrompt();
 
-    // 3) Przygotuj user message (obcięcie do 5000 znaków)
+    // 3) 🚀 NOWE: Pobierz ostatnie 4 pary konwersacji dla kontekstu
+    console.log('📚 Loading recent conversation context for session:', sessionId);
+    const recentContext = await dbService.getRecentConversationContext(sessionId, 4); // 4 ostatnie pary pytanie-odpowiedź
+    console.log('📚 Recent context loaded:', {
+      sessionId,
+      contextPairs: recentContext.messages.length,
+      total: recentContext.total
+    });
+
+    // 4) Przygotuj user message (obcięcie do 5000 znaków)
     const userMessage = String(message).slice(0, 5000);
 
-    // 4) Złóż wiadomości dla OpenAI
+    // 5) Złóż wiadomości dla OpenAI z KONTEKSTEM 🎯
     const messages = [
       {
         role: 'system',
         content: systemPrompt + 
           '\n\nZASADA TWARDA: Odpowiadaj TYLKO na podstawie powyższego tekstu. ' +
-          'Jeśli w bazie nie ma informacji – odpowiedz dokładnie: "Brak danych w bazie".'
-      },
-      { 
-        role: 'user', 
-        content: userMessage 
+          'Jeśli w bazie nie ma informacji – odpowiedz dokładnie: "Brak danych w bazie".' +
+          '\n\nKONTEKST KONWERSACJI: Pamiętaj wcześniejsze wiadomości w tej rozmowie. ' +
+          'Jeśli wcześniej pytałeś użytkownika o szczegóły (np. staż pracy, wykształcenie, wymiar etatu), ' +
+          'a teraz odpowiada krótko, odnosij się do swojego poprzedniego pytania. ' +
+          'Kontynuuj rozmowę logicznie i naturalnie. ' +
+          'Jeśli użytkownik podaje konkretne dane (np. "2 lata", "średnie"), zrozum to w kontekście poprzednich pytań.'
       }
     ];
 
-    // 5) Wywołanie OpenAI
+    // DODAJ KONTEKST OSTATNICH KONWERSACJI
+    if (recentContext.messages && recentContext.messages.length > 0) {
+      console.log('🔗 Adding recent conversation context to OpenAI messages');
+      recentContext.messages.forEach(msg => {
+        messages.push(
+          { role: 'user', content: msg.user_message },
+          { role: 'assistant', content: msg.ai_response }
+        );
+      });
+    }
+
+    // DODAJ AKTUALNE PYTANIE na końcu
+    messages.push({ 
+      role: 'user', 
+      content: userMessage 
+    });
+
+    // Debug: sprawdź strukturę wiadomości
+    console.log('🤖 Sending to OpenAI with context:', {
+      sessionId,
+      totalMessages: messages.length,
+      systemPrompt: 1,
+      contextPairs: recentContext.messages.length,
+      currentMessage: 1,
+      currentMessagePreview: userMessage.substring(0, 50) + '...',
+      messagesStructure: messages.map((msg, i) => ({
+        index: i,
+        role: msg.role,
+        contentLength: msg.content.length,
+        preview: msg.content.substring(0, 30) + '...'
+      }))
+    });
+
+    // 6) Wywołanie OpenAI z lepszymi parametrami dla kontekstu
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages,
-      temperature: 0.2,
-      max_tokens: 600
+      temperature: 0.2, // Niska temperatura dla konsystentnych odpowiedzi
+      max_tokens: 600,
+      presence_penalty: 0.1, // Lekko karze powtarzanie
+      frequency_penalty: 0.1 // Lekko zachęca do różnorodności
     });
 
     const aiText = completion?.choices?.[0]?.message?.content?.trim() || 'Brak danych w bazie';
     
-    // 6) Oblicz czas odpowiedzi
+    // 7) Oblicz czas odpowiedzi
     const responseTime = Date.now() - started;
 
-    // 7) Zapisz rozmowę w bazie danych
+    // 8) Zapisz rozmowę w bazie danych
     try {
-      console.log('🔄 Attempting to save to DB:', sessionId, userMessage.length, aiText.length);
+      console.log('🔄 Attempting to save to DB:', {
+        sessionId,
+        userMessageLength: userMessage.length,
+        aiResponseLength: aiText.length,
+        responseTime
+      });
       await dbService.saveConversation(sessionId, userMessage, aiText, responseTime);
       console.log('✅ DB save successful');
     } catch (e) {
@@ -91,23 +141,49 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
       // Nie blokuj odpowiedzi jeśli zapis się nie uda
     }
 
-    // 8) Zwróć odpowiedź
+    // 9) Zwróć odpowiedź z dodatkowymi info
     return res.json({
       success: true,
       response: aiText,
       sessionId,
       timestamp: new Date().toISOString(),
       responseTime,
-      source: 'openai-gpt-4o-mini'
+      source: 'openai-gpt-4o-mini',
+      // Debug info (możesz usunąć w produkcji)
+      context: {
+        contextPairsUsed: recentContext.messages.length,
+        totalMessagesInPrompt: messages.length - 1, // -1 bo system prompt
+        hasHistory: recentContext.messages.length > 0
+      }
     });
 
   } catch (error) {
-    console.error('Chat error:', error);
+    console.error('❌ Chat error:', error);
     const responseTime = Date.now() - started;
+    
+    // Jeśli błąd OpenAI - spróbuj fallback
+    if (error.code === 'insufficient_quota' || error.code === 'invalid_api_key') {
+      console.log('🔄 OpenAI error - using fallback response');
+      try {
+        const fallbackResponse = getFallbackResponse(req.body.message || 'Pytanie o HR');
+        return res.json({
+          success: true,
+          response: fallbackResponse,
+          sessionId: req.body.sessionId,
+          timestamp: new Date().toISOString(),
+          responseTime,
+          source: 'fallback-due-to-openai-error'
+        });
+      } catch (fallbackError) {
+        console.error('❌ Fallback also failed:', fallbackError);
+      }
+    }
+    
     return res.status(500).json({
       error: 'Chat processing failed',
       code: 'CHAT_ERROR',
-      responseTime
+      responseTime,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
