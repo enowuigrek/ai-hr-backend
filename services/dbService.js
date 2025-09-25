@@ -86,23 +86,29 @@ async function getRecentConversationContext(sessionId, pairs = 4) {
   try {
     console.log('🔍 Getting recent context:', { sessionId, pairs });
     
-    // Pobierz ostatnie N*2 wiadomości (każda para to user + assistant)
+    // 🚀 POPRAWKA: Pobierz więcej wiadomości i sortuj poprawnie
     const result = await pool.query(
-      `SELECT user_message, ai_response, timestamp 
+      `SELECT user_message, ai_response, timestamp, id
        FROM conversations 
        WHERE session_id = $1 
        ORDER BY timestamp DESC 
        LIMIT $2`,
-      [sessionId, pairs]
+      [sessionId, pairs * 2] // pairs * 2 żeby mieć zapas
     );
     
-    // Odwróć kolejność żeby były od najstarszych
+    // Odwróć kolejność żeby były od najstarszych do najnowszych
     const messages = result.rows.reverse();
     
     console.log('📊 Recent context result:', {
       sessionId,
-      pairs: messages.length,
-      latestMessage: messages.length > 0 ? messages[messages.length - 1].user_message.substring(0, 50) + '...' : 'none'
+      foundRows: result.rows.length,
+      messagesAfterReverse: messages.length,
+      messageDetails: messages.map((msg, i) => ({
+        index: i,
+        userMessage: msg.user_message.substring(0, 30) + '...',
+        aiResponse: msg.ai_response.substring(0, 30) + '...',
+        timestamp: msg.timestamp
+      }))
     });
     
     return {

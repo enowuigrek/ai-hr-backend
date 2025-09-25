@@ -70,11 +70,13 @@ router.post('/', rateLimitMiddleware, async (req, res) => {
         content: systemPrompt + 
           '\n\nZASADA TWARDA: Odpowiadaj TYLKO na podstawie powyższego tekstu. ' +
           'Jeśli w bazie nie ma informacji – odpowiedz dokładnie: "Brak danych w bazie".' +
-          '\n\nKONTEKST KONWERSACJI: Pamiętaj wcześniejsze wiadomości w tej rozmowie. ' +
-          'Jeśli wcześniej pytałeś użytkownika o szczegóły (np. staż pracy, wykształcenie, wymiar etatu), ' +
-          'a teraz odpowiada krótko, odnosij się do swojego poprzedniego pytania. ' +
-          'Kontynuuj rozmowę logicznie i naturalnie. ' +
-          'Jeśli użytkownik podaje konkretne dane (np. "2 lata", "średnie"), zrozum to w kontekście poprzednich pytań.'
+          '\n\n🔥 OBSŁUGA KONTEKSTU - BARDZO WAŻNE:' +
+          '\n1. ZAWSZE sprawdzaj poprzednie wiadomości w rozmowie' +
+          '\n2. Jeśli wcześniej pytałeś o staż pracy/wykształcenie/szczegóły, a użytkownik odpowiada pojedynczymi słowami lub liczbami - TO SĄ ODPOWIEDZI NA TWOJE PYTANIA!' +
+          '\n3. Przykład: Ty: "Ile lat pracujesz?" → Użytkownik: "3 lata" lub "3" = odpowiedź na Twoje pytanie' +
+          '\n4. Przykład: Ty: "26 dni urlopu?" → Użytkownik: "26" = potwierdza 26 dni urlopu' +
+          '\n5. Nie pytaj ponownie o to samo - wykorzystaj podane dane do obliczeń!' +
+          '\n6. Jeśli dane są dziwne (np. 100 lat pracy), grzecznie zapytaj czy na pewno, ale nie ignoruj kontekstu'
       }
     ];
 
